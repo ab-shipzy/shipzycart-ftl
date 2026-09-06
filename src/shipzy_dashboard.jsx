@@ -20,9 +20,20 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-69";
+const BUILD_VERSION = "v2026.05.11-70";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-70",
+    date:    "2026-09-06",
+    title:   "Speak to Book — voice booking in any language",
+    highlights: [
+      "New gradient 'Speak to Book' button in the top bar, next to New Booking. Tap it, tap the big mic, and say the booking in ANY language — 'Bangalore se Delhi bhejna hai', 'book a truck from Pune to Nagpur', Kannada, Tamil, whatever comes naturally. Live transcript shows as you speak.",
+      "The configured AI (Settings → AI, the same key already saved) extracts pickup and drop from the speech and auto-matches both against your saved warehouses. A review step shows the matches as the familiar green cards — with type-and-suggest to correct either one, and an amber hint showing what was heard when no warehouse matched.",
+      "One tap on Book shipment: AWB and LR number generate exactly like a normal booking (same counters, same format), status Booked, audit trail records mode 'voice-booking', and the spoken sentence is kept in remarks. The shipment drawer opens immediately so vehicle, client, invoice and the rest get filled whenever ready — voice books the lane, humans fill the details.",
+      "Browsers without speech support (some iPhones) get a type-it-instead box in the same flow — the AI parsing works identically on typed Hinglish.",
+    ],
+  },
   {
     version: "v2026.05.11-69",
     date:    "2026-09-06",
@@ -4619,6 +4630,266 @@ function WelcomeSplash({ name, onDone }) {
   );
 }
 
+/* ── Speak-to-Book: voice booking in any language ────────────
+   Big mic button → user says "Bangalore se Delhi bhejna hai" /
+   "book a truck from Pune to Nagpur" in ANY language → the
+   configured AI (Settings → AI) extracts pickup & drop → both
+   auto-match against saved warehouses → one tap books a minimal
+   shipment (AWB + LR generated); everything else is filled later
+   in the drawer like any other booking. ── */
+function VoiceBookModal({ warehouses, counters, persistCounters, shipments, persistShipments, currentUser, onBooked, onClose, showToast }) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const [phase, setPhase] = useState("listen"); // listen | parsing | review | booking
+  const [listening, setListening] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [typed, setTyped] = useState("");
+  const [err, setErr] = useState(null);
+  const [pickupWhId, setPickupWhId] = useState("");
+  const [dropWhId, setDropWhId] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const recRef = useRef(null);
+
+  const startListening = () => {
+    if (!SR) return;
+    setErr(null); setTranscript("");
+    const rec = new SR();
+    recRef.current = rec;
+    rec.lang = navigator.language || "en-IN";
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.maxAlternatives = 1;
+    let finalText = "";
+    rec.onresult = (e) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalText += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      setTranscript((finalText + " " + interim).trim());
+    };
+    rec.onerror = (e) => {
+      setListening(false);
+      setErr(e.error === "not-allowed"
+        ? "Microphone permission denied — allow mic access for this site and try again."
+        : `Speech error: ${e.error}. You can type instead.`);
+    };
+    rec.onend = () => {
+      setListening(false);
+      const text = (finalText || "").trim();
+      if (text) parseText(text);
+    };
+    setListening(true);
+    rec.start();
+  };
+  const stopListening = () => { try { recRef.current?.stop(); } catch {} };
+  useEffect(() => () => { try { recRef.current?.abort(); } catch {} }, []);
+
+  const matchWarehouse = (text) => {
+    const t = String(text || "").trim().toLowerCase();
+    if (!t) return null;
+    let best = null, bestScore = 0;
+    for (const w of warehouses) {
+      const city = String(w.city || "").toLowerCase();
+      const hay = [w.name, w.area, w.city, w.state].filter(Boolean).join(" ").toLowerCase();
+      let score = 0;
+      if (city && city === t) score = 4;
+      else if (city && (t.includes(city) || city.includes(t))) score = 3;
+      else if (hay.includes(t)) score = 2;
+      else if (t.split(/\s+/).some(tok => tok.length > 3 && hay.includes(tok))) score = 1;
+      if (score > bestScore) { bestScore = score; best = w; }
+    }
+    return best;
+  };
+
+  const parseText = async (text) => {
+    setPhase("parsing"); setErr(null);
+    try {
+      const reply = await callAI({
+        system: 'You extract logistics booking info. From the spoken or typed text of the user — in ANY language (Hindi, Hinglish, English, Kannada, Tamil, etc.) — identify the PICKUP location and the DROP (delivery) location. Reply with ONLY minified JSON, no markdown, no explanation: {"pickup":"<place name in English spelling>","drop":"<place name in English spelling>"}. Use standard English spellings of Indian city/area names. If a location is not mentioned, use an empty string for it.',
+        messages: [{ role: "user", content: text }],
+        maxTokens: 150,
+        temperature: 0,
+      });
+      const m = String(reply || "").match(/\{[\s\S]*\}/);
+      const j = JSON.parse(m ? m[0] : reply);
+      const p = { pickup: String(j.pickup || "").trim(), drop: String(j.drop || "").trim() };
+      setParsed(p);
+      const pw = matchWarehouse(p.pickup);
+      const dw = matchWarehouse(p.drop);
+      setPickupWhId(pw ? pw.id : "");
+      setDropWhId(dw && (!pw || dw.id !== pw.id) ? dw.id : (dw && pw && dw.id === pw.id ? "" : ""));
+      if (dw && (!pw || dw.id !== pw.id)) setDropWhId(dw.id);
+      setPhase("review");
+    } catch (e) {
+      setPhase(SR ? "listen" : "listen");
+      setErr(`Could not understand that (${e.message || "AI error"}). Try again or type it.`);
+    }
+  };
+
+  const searchWarehouses = (q) => {
+    const needle = q.trim().toLowerCase();
+    return warehouses.filter(w => {
+      const hay = [w.name, w.area, w.city, w.state, w.pincode].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(needle);
+    }).slice(0, 7).map(w => ({
+      id: w.id, title: w.name,
+      sub: [w.area, w.city, w.state].filter(Boolean).join(", "),
+    }));
+  };
+  const whSel = (id) => {
+    const w = warehouses.find(x => x.id === id);
+    return w ? { title: w.name, sub: [w.area, w.city, w.state].filter(Boolean).join(", ") } : null;
+  };
+
+  const book = () => {
+    if (!pickupWhId || !dropWhId) return;
+    setPhase("booking");
+    try {
+      const pickup   = warehouses.find(w => w.id === pickupWhId);
+      const delivery = warehouses.find(w => w.id === dropWhId);
+      const dayKey   = ddmmyyToday();
+      const dayMap   = counters.daily || {};
+      const nextSeq  = (dayMap[dayKey] || 0) + 1;
+      const nextCounters = {
+        awbSeq: (counters.awbSeq || 0) + 1,
+        lrSeq:  (counters.lrSeq  || 0) + 1,
+        daily:  { ...dayMap, [dayKey]: nextSeq },
+      };
+      const awb = `${stateCode2(pickup?.state)}-${stateCode2(delivery?.state)}-${dayKey}-${String(nextSeq).padStart(3, "0")}`;
+      const lr  = `LR-${new Date().getFullYear()}-${String(nextCounters.lrSeq).padStart(4, "0")}`;
+      const note = transcript || typed;
+      const s = {
+        id: uid("sh"),
+        awb, lrNumber: lr, lrDate: todayISO(),
+        status: "Booked",
+        createdBy:       currentUser?.id     || "",
+        createdByName:   currentUser?.name   || "",
+        createdByMobile: currentUser?.mobile || "",
+        audit: [auditEvent(currentUser, "create", { awb, lrNumber: lr, mode: "voice-booking" })],
+        groupId: null, groupIndex: 1, groupTotal: 1,
+        billingClientId: "", billingClientPocId: "", vendorId: "",
+        pickupWarehouseId: pickupWhId, deliveryWarehouseId: dropWhId,
+        vehicleTypeId: "", vehicleNumber: "", driverName: "", driverNumber: "",
+        boxes: 0, cbm: 0, weightKg: 0,
+        dimensions: [{ count: 0, l: 0, w: 0, h: 0 }],
+        invoiceNo: "", invoiceValue: 0, ewayBillNo: "", saidToContain: "",
+        remarks: note ? `Voice booking: "${note.slice(0, 140)}"` : "Voice booking",
+        costs: [
+          { id: uid("c"), name: "Freight Cost",        amount: 0 },
+          { id: uid("c"), name: "Loading / Unloading", amount: 0 },
+        ],
+        revenues: [
+          { id: uid("r"), name: "Freight",             amount: 0 },
+          { id: uid("r"), name: "Loading / Unloading", amount: 0 },
+        ],
+        docs: [],
+        pickupLegs: [{
+          id: uid("pl"), warehouseId: pickupWhId, pickupDate: todayISO(),
+          invoiceNo: "", invoiceValue: 0, ewayBillNo: "", quantity: 0,
+          uom: "Boxes", cbm: 0, weightKg: 0, saidToContain: "", notes: "",
+        }],
+        createdAt: todayISO(),
+      };
+      persistCounters(nextCounters);
+      persistShipments([...shipments, s]);
+      showToast(`Booked ${awb} by voice — fill remaining details`);
+      onBooked(s);
+    } catch (e) {
+      setErr(e.message || "Booking failed");
+      setPhase("review");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose}></div>
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden">
+        <style>{`@keyframes micPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(0,116,255,.35); } 50% { box-shadow: 0 0 0 22px rgba(0,116,255,0); } }`}</style>
+
+        <div className="px-5 py-4 border-b border-slate-200 flex items-start gap-3">
+          <div className="w-10 h-10 rounded-lg bg-[#0074ff]/10 grid place-items-center shrink-0">
+            <Mic className="w-5 h-5 text-[#0074ff]" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-semibold text-[#00304a]">Speak to Book</h3>
+            <p className="text-xs text-slate-500 mt-0.5">Say it in any language — "Bangalore se Delhi", "book truck from Pune to Nagpur"…</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-[#00304a]"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5">
+          {(phase === "listen" || phase === "parsing") && (
+            <div className="flex flex-col items-center gap-4">
+              {SR ? (
+                <>
+                  <button onClick={listening ? stopListening : startListening} disabled={phase === "parsing"}
+                    className={`w-24 h-24 rounded-full grid place-items-center transition
+                      ${listening ? "bg-[#0074ff] text-white" : "bg-[#00304a] hover:bg-[#0074ff] text-white"} disabled:opacity-50`}
+                    style={listening ? { animation: "micPulse 1.4s ease-out infinite" } : {}}>
+                    <Mic className="w-10 h-10" />
+                  </button>
+                  <div className="text-[12px] font-semibold text-[#00304a]">
+                    {phase === "parsing" ? "Understanding…" : listening ? "Listening — tap to finish" : "Tap and speak"}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-amber-600 text-center">Voice input isn't supported in this browser — type your booking below.</div>
+              )}
+              {transcript && (
+                <div className="w-full text-[12.5px] text-slate-700 bg-slate-50 border border-slate-100 rounded-lg p-3 text-center italic">"{transcript}"</div>
+              )}
+              <div className="w-full">
+                <div className="text-[9.5px] uppercase tracking-wider text-slate-400 font-bold mb-1 text-center">or type it</div>
+                <div className="flex gap-2">
+                  <input value={typed} onChange={(e) => setTyped(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && typed.trim()) parseText(typed.trim()); }}
+                    placeholder='e.g. "Mumbai to Hyderabad bhejna hai"' className={inputCls + " flex-1"} disabled={phase === "parsing"} />
+                  <button onClick={() => typed.trim() && parseText(typed.trim())} disabled={phase === "parsing" || !typed.trim()}
+                    className="shrink-0 px-3 py-2 rounded bg-[#0074ff] text-white text-[12px] font-bold disabled:opacity-40">Go</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {(phase === "review" || phase === "booking") && (
+            <div className="space-y-3">
+              {(transcript || typed) && (
+                <div className="text-[11.5px] text-slate-500 italic text-center">"{transcript || typed}"</div>
+              )}
+              <div>
+                <div className="text-[9.5px] uppercase tracking-wider text-slate-500 font-bold mb-1">
+                  Pickup {parsed?.pickup && !pickupWhId ? <span className="text-amber-600 normal-case font-semibold">— heard "{parsed.pickup}", pick the warehouse:</span> : null}
+                </div>
+                <SuggestInput selected={whSel(pickupWhId)} onSelect={(r) => setPickupWhId(r.id)} onClear={() => setPickupWhId("")}
+                  search={searchWarehouses} placeholder="Type warehouse / city…" emptyHint={'No warehouse matches "{q}".'} />
+              </div>
+              <div>
+                <div className="text-[9.5px] uppercase tracking-wider text-slate-500 font-bold mb-1">
+                  Drop {parsed?.drop && !dropWhId ? <span className="text-amber-600 normal-case font-semibold">— heard "{parsed.drop}", pick the warehouse:</span> : null}
+                </div>
+                <SuggestInput selected={whSel(dropWhId)} onSelect={(r) => setDropWhId(r.id)} onClear={() => setDropWhId("")}
+                  search={searchWarehouses} placeholder="Type warehouse / city…" emptyHint={'No warehouse matches "{q}".'} />
+              </div>
+              <div className="text-[10px] text-slate-400">AWB & LR number generate now; vehicle, client, invoice and everything else can be filled in the shipment drawer after booking.</div>
+              <div className="flex gap-2 pt-1">
+                <button onClick={() => { setPhase("listen"); setTranscript(""); setTyped(""); setErr(null); }}
+                  className="px-4 py-2 rounded text-[12px] font-semibold text-slate-600 hover:text-[#00304a] border border-slate-200">↺ Retry</button>
+                <button onClick={book} disabled={!pickupWhId || !dropWhId || phase === "booking"}
+                  className="flex-1 py-2 rounded bg-[#0074ff] text-white text-[12px] font-bold disabled:opacity-40">
+                  {phase === "booking" ? "Booking…" : "Book shipment"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {err && <div className="mt-3 text-[11px] text-rose-500 text-center">{err}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [spotlightOpen, setSpotlightOpen] = useState(false);
 
@@ -4665,6 +4936,7 @@ export default function App() {
   const [desktopCollapsed, setDesktopCollapsed] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [drawerPodReq, setDrawerPodReq] = useState(null);
+  const [voiceBookOpen, setVoiceBookOpen] = useState(false);
 
   useEffect(() => {
     window.__shipzy_request_pod = (shipment, cb) => setDrawerPodReq({ shipment, cb });
@@ -5375,7 +5647,7 @@ export default function App() {
       <Sidebar route={route} setRoute={(r) => { setRoute(r); setMobileMenuOpen(false); }} mobileOpen={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} desktopCollapsed={desktopCollapsed} onToggleDesktop={() => setDesktopCollapsed(c => !c)} currentUser={currentUser} roles={roles} />
 
       <main className="flex-1 min-w-0 flex flex-col">
-        <TopBar route={route} setRoute={setRoute} onMenu={() => setMobileMenuOpen(true)} desktopCollapsed={desktopCollapsed} onExpandSidebar={() => setDesktopCollapsed(false)}  onSpotlight={() => setSpotlightOpen(true)} currentUser={currentUser} onLogout={onLogout} showUserMenu={showUserMenu} setShowUserMenu={setShowUserMenu} roles={roles} weatherMood={weatherMood} cloudConfig={cloudConfig} cloudStatus={cloudStatus} updateCloudConfig={updateCloudConfig} presenceList={presenceList} />
+        <TopBar route={route} setRoute={setRoute} onMenu={() => setMobileMenuOpen(true)} desktopCollapsed={desktopCollapsed} onExpandSidebar={() => setDesktopCollapsed(false)}  onSpotlight={() => setSpotlightOpen(true)} currentUser={currentUser} onLogout={onLogout} showUserMenu={showUserMenu} setShowUserMenu={setShowUserMenu} roles={roles} weatherMood={weatherMood} cloudConfig={cloudConfig} cloudStatus={cloudStatus} updateCloudConfig={updateCloudConfig} presenceList={presenceList} onSpeakToBook={() => setVoiceBookOpen(true)} />
 
         <div className="flex-1 overflow-auto" key={route}>
           <div className="shipzy-page-in">
@@ -5584,6 +5856,19 @@ export default function App() {
         </div>
       )}
 
+      {voiceBookOpen && (
+        <VoiceBookModal
+          warehouses={warehouses}
+          counters={counters}
+          persistCounters={persistCounters}
+          shipments={shipments}
+          persistShipments={persistShipments}
+          currentUser={currentUser}
+          showToast={showToast}
+          onClose={() => setVoiceBookOpen(false)}
+          onBooked={(s) => { setVoiceBookOpen(false); setOpenShipment(s); setRoute("shipments"); }}
+        />
+      )}
       {drawerPodReq && (
         <PodUploadModal
           shipments={[drawerPodReq.shipment]}
@@ -7171,7 +7456,7 @@ function VersionPill() {
   );
 }
 
-function TopBar({ route, setRoute, onMenu, desktopCollapsed, onExpandSidebar, onSpotlight, currentUser, onLogout, showUserMenu, setShowUserMenu, roles, weatherMood, cloudConfig, cloudStatus, updateCloudConfig, presenceList }) {
+function TopBar({ route, setRoute, onMenu, desktopCollapsed, onExpandSidebar, onSpotlight, currentUser, onLogout, showUserMenu, setShowUserMenu, roles, weatherMood, cloudConfig, cloudStatus, updateCloudConfig, presenceList, onSpeakToBook }) {
   const titles = {
     "dashboard":        { t:"Dashboard",            s:"Live overview of your full-truck-load operations" },
     "new-booking":      { t:"Create New Booking",   s:"Book a new FTL shipment in under a minute" },
@@ -7225,6 +7510,13 @@ function TopBar({ route, setRoute, onMenu, desktopCollapsed, onExpandSidebar, on
           cloudConfig={cloudConfig} />
         {/* Build version — click to see What's new */}
         <VersionPill />
+        {/* Speak to Book — voice booking in any language */}
+        <button onClick={() => onSpeakToBook && onSpeakToBook()}
+          className="flex items-center gap-1.5 px-2.5 lg:px-3 py-1.5 text-white text-[11.5px] font-bold rounded-md transition shadow-md shadow-[#0074ff]/30 hover:brightness-110"
+          style={{ background: "linear-gradient(90deg, #0074ff 0%, #00b4c8 100%)" }}
+          title="Speak to Book — any language">
+          <Mic className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Speak to Book</span><span className="sm:hidden">Speak</span>
+        </button>
         <button onClick={() => setRoute("new-booking")}
           className="flex items-center gap-1.5 px-2.5 lg:px-3 py-1.5 bg-[#00304a] hover:bg-[#0074ff] text-white text-[11.5px] font-medium rounded-md transition">
           <Plus className="w-3.5 h-3.5" /> <span className="hidden sm:inline">New Booking</span><span className="sm:hidden">New</span>
