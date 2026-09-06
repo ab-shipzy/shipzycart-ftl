@@ -20,9 +20,19 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-68";
+const BUILD_VERSION = "v2026.05.11-69";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-69",
+    date:    "2026-09-06",
+    title:   "POD upload is now optional when marking Delivered",
+    highlights: [
+      "Marking a shipment Delivered no longer requires a POD upload. The same modal appears (single-shipment status change and bulk action both), but Confirm Delivered is always enabled — upload the signed POD if you have it, or confirm without any file. A small amber note states how many shipments will be delivered without a document, and the button shows how many PODs are attached.",
+      "PODs can still be added any time later from the Documents tab, and the dashboard's 'POD missing' attention card continues to track delivered shipments without one — so nothing slips through, it just doesn't block the status change anymore.",
+      "Audit trail unchanged: the status-change event always records; a doc-upload event records only when a POD was actually attached.",
+    ],
+  },
   {
     version: "v2026.05.11-68",
     date:    "2026-09-06",
@@ -12235,13 +12245,16 @@ function PodUploadModal({ shipments, onCancel, onConfirm }) {
   };
   const [previewDoc, setPreviewDoc] = useState(null);
 
-  const allFilled = shipments.every(s => files[s.id]);
+  const uploadedCount = shipments.filter(s => files[s.id]).length;
 
   const submit = () => {
-    if (!allFilled) return;
     setBusy(true);
+    // v69: POD is optional — include only the shipments that actually
+    // have a file; the rest are delivered without a document and the
+    // POD can be added later from the Documents tab.
     const pods = {};
     shipments.forEach(s => {
+      if (!files[s.id]) return;
       pods[s.id] = {
         id: uid("doc"), category: "POD",
         name: files[s.id].name, dataUrl: files[s.id].dataUrl, size: files[s.id].size,
@@ -12260,9 +12273,9 @@ function PodUploadModal({ shipments, onCancel, onConfirm }) {
             <CheckCircle2 className="w-5 h-5 text-[#0a7a64]" />
           </div>
           <div className="flex-1 min-w-0">
-            <h3 className="font-semibold text-[#00304a]">POD required to mark as Delivered</h3>
+            <h3 className="font-semibold text-[#00304a]">Mark as Delivered</h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Upload the signed Proof of Delivery for {shipments.length === 1 ? "this shipment" : `each of these ${shipments.length} shipments`}. Photos or PDFs accepted.
+              Upload the signed Proof of Delivery for {shipments.length === 1 ? "this shipment" : `these ${shipments.length} shipments`} if you have it — photos or PDFs. <span className="font-semibold">POD is optional</span>; you can add it later from the Documents tab.
             </p>
           </div>
         </div>
@@ -12308,13 +12321,21 @@ function PodUploadModal({ shipments, onCancel, onConfirm }) {
           ))}
         </div>
 
-        <div className="px-5 py-4 border-t border-slate-200 flex items-center justify-between gap-3">
-          <button onClick={onCancel} className="px-4 py-2 text-xs text-slate-600 hover:text-[#00304a]">Cancel</button>
-          <button onClick={submit} disabled={!allFilled || busy}
-            className={`px-5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition
-              ${allFilled && !busy ? "bg-[#0074ff] hover:bg-[#0074ff]/90 text-white shadow-lg shadow-[#0074ff]/30" : "bg-slate-100 text-slate-400 cursor-not-allowed"}`}>
-            <CheckCircle2 className="w-3.5 h-3.5" /> Confirm Delivered
-          </button>
+        <div className="px-5 py-4 border-t border-slate-200">
+          {uploadedCount < shipments.length && (
+            <div className="mb-2.5 text-[10.5px] text-amber-600">
+              {uploadedCount === 0
+                ? "No POD uploaded — shipments will be marked Delivered without a document."
+                : `${shipments.length - uploadedCount} of ${shipments.length} without POD — those will be marked Delivered without a document.`}
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-3">
+            <button onClick={onCancel} className="px-4 py-2 text-xs text-slate-600 hover:text-[#00304a]">Cancel</button>
+            <button onClick={submit} disabled={busy}
+              className="px-5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition bg-[#0074ff] hover:bg-[#0074ff]/90 text-white shadow-lg shadow-[#0074ff]/30 disabled:opacity-50">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Confirm Delivered{uploadedCount > 0 ? ` (${uploadedCount} POD${uploadedCount > 1 ? "s" : ""})` : ""}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -13124,7 +13145,8 @@ function Shipments({ shipments, warehouses, vehicles, billingClients, vendors, p
             return applyAuditEvents({ ...s, status: "Delivered", docs }, evts);
           });
           persistShipments(next);
-          showToast(`${selectedIds.size} marked Delivered with POD`);
+          const podCount = Object.keys(pods).length;
+          showToast(`${selectedIds.size} marked Delivered${podCount ? ` (${podCount} POD${podCount > 1 ? "s" : ""} attached)` : ""}`);
           clearSelection();
           setBulkAction(null);
           setPodModal(null);
@@ -14252,6 +14274,9 @@ function ShipmentDrawer({ shipment, shipments, warehouses, vehicles, billingClie
                 if (v === "Delivered" && s.status !== "Delivered" && !podInCentral && !podInLegacy) {
                   if (typeof window.__shipzy_request_pod === "function") {
                     window.__shipzy_request_pod(s, (pod) => {
+                      // v69: POD is optional — no file means just mark
+                      // Delivered; the POD can be added later from Documents.
+                      if (!pod) { set("status", "Delivered"); return; }
                       // Write POD to the central repo; keep s.docs untouched.
                       if (persistDocuments) {
                         const podDoc = {
