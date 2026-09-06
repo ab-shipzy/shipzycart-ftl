@@ -1,0 +1,8 @@
+{
+  "name": "shipzycart-build",
+  "private": true,
+  "dependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-react": "^7.24.0"
+  }
+}

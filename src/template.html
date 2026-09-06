@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ShipzyCart • FTL Dashboard</title>
+<link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,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">
+<link rel="icon" type="image/png" sizes="16x16" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAACYUlEQVR4nJ2TS4iOcRTGf+f8/+/7zdcYMxmGEFmwsRCiKVnJyi2kUcpKCcl9PWyUMC5JKRs7WVAuG0WhlCSxsJBySUJT5jPD9723cyw+M2Pt2Z7Or+c5pwfGNejKf0gmlk+IcehTHZ2xHYlLkNiLWQOhB4hghuOk2sL0EqfkJYOuOrF8eGwpYeZD1AeAvVTNMcR3gc3F8kcU2X2K1j2KfCXQ/9eARo7jDDd6keQGVbEfDTuoRtcQOtcTpUZVfiToEjQEsJIQOqiq0fEIERHnyO89uN1FbAySHrT8hrOJ5pd+pDYdAJdAjD+paovQtD4JAHBdheUn0bARK+8i9eXUdAatvpNgIyCdRMkwXiMWMZq4C8ehfXmRBLMWeCRIE/eplOUTgr6j1rEF8VHSdCNiG0jS5WDzEXEYB1C9IaZrQR7jYTPYSyrp40yymzw7iGjg18hmCNBqrMPZz+HGIk5I2QZ4cQkNByiyHyALMJ+N+FeO5QcY6riA+yxUvoC/h9o0vLyIpvvaDgY9MtT9FuQiU7rvQQWdPbdwrwjJeY4WVwj+HddlSHULkdWY38dl8WQEd0GSDxT5C1zvkBe3IUwly29itpCYrEalQeV18BKVDpxq8gsizrG/Q/n9gKJ8jruhOJYNk/Vdg+YLtPssnp2CZCvY00lAW000mYfpAAkRoQKvE3p3kuensTiTYCO4TkF0Awz34y7/ArqwskVVPsEkJYQ6GgcoPQPvInY9QIqHSDKIFdsYmjNMl2sErP3J/Bm1dAUe1xEQUAU+41wl1Lvx8jImr7Bv1zk3rznRof/SP9X/AyhyEp2Kph4uAAAAAElFTkSuQmCC">
+<link rel="apple-touch-icon" sizes="180x180" href="data:image/png;base64,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">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#00304a">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<script>
+  // Register service worker (PWA installability / Android TWA requirement)
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("/sw.js").catch(function () {});
+    });
+  }
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Tailwind via CDN (JIT, supports arbitrary values like bg-[#0074ff]/10) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- React 18 UMD -->
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <!-- (Babel removed in v25 — JSX is pre-compiled at build time, no in-browser transform needed) -->
+
+<!-- Lucide vanilla (icon data) -->
+<script src="https://unpkg.com/lucide@0.292.0/dist/umd/lucide.js"></script>
+
+<!-- PDF.js for client-side e-Way Bill parsing -->
+<script src="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+
+<!-- SheetJS for XLSX export from Custom Report Builder -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+
+<!-- ExcelJS for fully styled Excel exports (borders, fonts, colors, merged cells) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+
+<!-- Leaflet for the New Booking route map (OpenStreetMap tiles, no API key) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Firebase SDK (compat) for cloud-sync — multi-device real-time data -->
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-storage-compat.js"></script>
+<script>
+  if (window.pdfjsLib) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+  }
+</script>
+
+<style>
+  html, body { margin: 0; padding: 0; }
+  :root {
+    --brand: #0074ff;
+    --brand-deep: #0058c4;
+    --brand-soft: #e6f1ff;
+    --navy: #00304a;
+    --ink: #0f172a;
+    --ink-2: #334155;
+    --ink-3: #64748b;
+    --ink-4: #94a3b8;
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --line: #e5e7eb;
+    --line-2: #d1d5db;
+    --ok: #059669;  --ok-soft: #ecfdf5;
+    --warn: #d97706; --warn-soft: #fffbeb;
+    --bad: #dc2626; --bad-soft: #fef2f2;
+  }
+  body {
+    font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  /* Mono utility class for figures (AWB, ₹, percentages) */
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-feature-settings: 'zero', 'ss02'; font-variant-numeric: tabular-nums; }
+
+  /* ===== Mobile-responsive global rules ===== */
+
+  /* Kill the default iOS / Android blue tap-highlight flash on every clickable
+     element. We have our own active / hover states. */
+  * { -webkit-tap-highlight-color: transparent; }
+
+  /* Disable iOS rubber-band / overscroll which interferes with sticky
+     positioning and feels non-native. Body still scrolls. */
+  html, body { overscroll-behavior-y: none; -webkit-overflow-scrolling: touch; }
+
+  /* iOS auto-zooms on focused input when computed font-size < 16px.
+     The dashboard uses 12.5px for inputs (correct on desktop). Override
+     to 16px on mobile to prevent the zoom. */
+  @media (max-width: 640px) {
+    input:not([type="checkbox"]):not([type="radio"]),
+    select, textarea {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Boost icon-only button tap targets on mobile only. Most icon buttons
+     in the dashboard are 24-28px which is well below the iOS HIG (44px)
+     and Material guideline (48px). Apply min-size on mobile only so the
+     desktop layout stays compact. */
+  @media (max-width: 640px) {
+    button, a[role="button"], [role="button"] {
+      min-height: 36px;
+      min-width: 36px;
+    }
+    /* Opt out: tight buttons inside compact rows that would break layout */
+    [data-tight] { min-height: 0 !important; min-width: 0 !important; }
+  }
+
+  /* Dynamic viewport-height utilities. iOS Safari counts the URL bar in
+     100vh, making fixed/sticky elements taller than the visible viewport.
+     100dvh excludes that. Modern browsers honour it; older fall back. */
+  .h-screen-dvh { height: 100vh; height: 100dvh; }
+  .min-h-screen-dvh { min-height: 100vh; min-height: 100dvh; }
+
+  /* Custom scrollbar (used by .scrollbar-thin in the JSX) */
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(0,48,74,.18); border-radius: 3px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: rgba(0,48,74,.32); }
+
+  /* Safe-area helpers for drawer footers and sticky toolbars */
+  .pb-safe { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+  .pt-safe { padding-top:    max(0.5rem, env(safe-area-inset-top)); }
+
+  /* Prevent horizontal scroll bleed when wide tables sit inside a parent —
+     common cause of the page wobbling under the thumb on Android. */
+  body { overflow-x: hidden; }
+
+  /* Smooth momentum scroll for horizontal toolbars (drawer tab strips,
+     status pill rails on mobile, table x-overflow). */
+  .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+
+  /* ===== Branded loader animations =====
+     Y-axis (vertical-axis) coin-flip rotation. Linear easing for
+     constant angular velocity. The wrapper sets `perspective` so the
+     rotation reads as 3D depth instead of just looking squashed. */
+  @keyframes shipzy-spin {
+    from { transform: rotateY(0deg); }
+    to   { transform: rotateY(360deg); }
+  }
+  .shipzy-spin {
+    animation: shipzy-spin 1.2s linear infinite;
+    transform-style: preserve-3d;
+    backface-visibility: visible;
+    will-change: transform;
+  }
+  .shipzy-spin-wrap {
+    perspective: 600px;
+    display: inline-block;
+  }
+
+  
+  /* ============================================================
+     WEATHER MOOD — full-page themed overlay + animations.
+     Behind everything (z-index -1), pointer-events: none, so it
+     never blocks UI interaction.
+     ============================================================ */
+  .weather-mood-bg {
+    position: fixed; inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .weather-gradient {
+    position: absolute; inset: 0;
+    transition: background 1.2s ease;
+  }
+
+  /* Rain — vertical streaks, fast loop, low opacity */
+  .weather-rain span {
+    position: absolute;
+    top: -10%;
+    width: 1px; height: 60px;
+    background: linear-gradient(180deg, transparent, rgba(99,102,241,.35) 80%, transparent);
+    animation: rain-fall linear infinite;
+    will-change: transform;
+  }
+  @keyframes rain-fall {
+    0%   { transform: translateY(-10vh); }
+    100% { transform: translateY(110vh); }
+  }
+
+  /* Snow — drifting flakes */
+  .weather-snow span {
+    position: absolute;
+    top: -5%;
+    color: rgba(255,255,255,.8);
+    animation: snow-fall linear infinite;
+    text-shadow: 0 0 2px rgba(0,0,0,.1);
+    will-change: transform;
+  }
+  @keyframes snow-fall {
+    0%   { transform: translateY(-5vh) translateX(0); }
+    50%  { transform: translateY(50vh) translateX(20px); }
+    100% { transform: translateY(110vh) translateX(0); }
+  }
+
+  /* Stars — twinkle on a dark sky */
+  .weather-stars span {
+    position: absolute;
+    width: 2px; height: 2px;
+    background: white; border-radius: 50%;
+    box-shadow: 0 0 4px rgba(255,255,255,.6);
+    animation: star-twinkle 3s ease-in-out infinite;
+  }
+  @keyframes star-twinkle {
+    0%,100% { opacity: 0.2; transform: scale(0.8); }
+    50%     { opacity: 1;   transform: scale(1.2); }
+  }
+
+  /* Heat — wavy lines rising */
+  .weather-heat span {
+    position: absolute;
+    bottom: -5%;
+    width: 50px; height: 100vh;
+    background: radial-gradient(circle at top, rgba(249,115,22,.08), transparent 50%);
+    animation: heat-rise linear infinite;
+    filter: blur(8px);
+    will-change: transform;
+  }
+  @keyframes heat-rise {
+    0%   { transform: translateY(0)      scaleX(1); opacity: 0.5; }
+    50%  { transform: translateY(-30vh)  scaleX(1.4); opacity: 0.8; }
+    100% { transform: translateY(-110vh) scaleX(0.6); opacity: 0; }
+  }
+
+  /* Sun — single warm radial glow in top-right */
+  .weather-sun {
+    position: absolute;
+    top: -150px; right: -150px;
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, rgba(254,215,107,.55) 0%, rgba(254,215,107,0) 60%);
+    border-radius: 50%;
+    animation: sun-pulse 8s ease-in-out infinite;
+    filter: blur(20px);
+  }
+  @keyframes sun-pulse {
+    0%,100% { transform: scale(1); opacity: 0.85; }
+    50%     { transform: scale(1.1); opacity: 1; }
+  }
+
+  /* Frost — small crystalline dots scattered */
+  .weather-frost span {
+    position: absolute;
+    width: 4px; height: 4px;
+    background: white;
+    border-radius: 50%;
+    box-shadow: 0 0 6px rgba(255,255,255,.7), 0 0 2px rgba(99,179,237,.5);
+    animation: frost-pulse 4s ease-in-out infinite;
+  }
+  @keyframes frost-pulse {
+    0%,100% { opacity: 0.3; transform: scale(0.7); }
+    50%     { opacity: 0.85; transform: scale(1.15); }
+  }
+
+  /* Breeze — soft horizontal streamers */
+  .weather-breeze span {
+    position: absolute;
+    left: -15%;
+    width: 200px; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(16,185,129,.35), transparent);
+    animation: breeze-drift linear infinite;
+    will-change: transform;
+  }
+  @keyframes breeze-drift {
+    0%   { transform: translateX(0);     opacity: 0; }
+    20%  { opacity: 1; }
+    80%  { opacity: 1; }
+    100% { transform: translateX(120vw); opacity: 0; }
+  }
+
+  /* Fog — slowly drifting cloud layer */
+  .weather-fog {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at 30% 30%, rgba(255,255,255,.4), transparent 40%),
+      radial-gradient(ellipse at 70% 60%, rgba(255,255,255,.35), transparent 50%),
+      radial-gradient(ellipse at 50% 80%, rgba(255,255,255,.3), transparent 45%);
+    animation: fog-drift 25s ease-in-out infinite alternate;
+    filter: blur(8px);
+  }
+  @keyframes fog-drift {
+    0%   { transform: translateX(0)    scale(1); }
+    100% { transform: translateX(-40px) scale(1.05); }
+  }
+
+  /* Honour reduced-motion: kill all weather animations */
+  @media (prefers-reduced-motion: reduce) {
+    .weather-rain span,
+    .weather-snow span,
+    .weather-stars span,
+    .weather-heat span,
+    .weather-sun,
+    .weather-frost span,
+    .weather-breeze span,
+    .weather-fog {
+      animation: none !important;
+    }
+  }
+
+  /* Subtle scale pulse layered on top — mark feels alive */
+  @keyframes shipzy-pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50%      { transform: scale(0.95); opacity: 0.85; }
+  }
+  .shipzy-pulse {
+    animation: shipzy-pulse 1.2s ease-in-out infinite;
+  }
+
+  /* Page-transition fade — used on main content area on route change.
+     IMPORTANT: the `to` keyframe must use `transform: none` rather than
+     `translateY(0)`. With `animation-fill-mode: both`, the `to` state
+     persists after the animation completes — and any non-none transform
+     value (including `translateY(0)`) creates a NEW containing block for
+     position:fixed descendants, which breaks drawers/modals that use
+     `inset-0` (they get clipped to the page content height instead of
+     the viewport). */
+  @keyframes shipzy-page-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: none; }
+  }
+  .shipzy-page-in {
+    animation: shipzy-page-in 0.18s ease-out both;
+  }
+
+  /* Save-indicator pulsing ring on the SC avatar */
+  @keyframes shipzy-save-ring {
+    0%   { box-shadow: 0 0 0 0   rgba(67, 237, 212, 0.7); }
+    70%  { box-shadow: 0 0 0 8px rgba(67, 237, 212, 0); }
+    100% { box-shadow: 0 0 0 0   rgba(67, 237, 212, 0); }
+  }
+  .shipzy-save-ring {
+    animation: shipzy-save-ring 0.8s ease-out 1;
+  }
+  /* Loader shown until React boots */
+  #boot {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: var(--bg); z-index: 9999;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    transition: opacity .3s ease;
+  }
+  #boot .b { display:flex; align-items:center; gap: 10px; color: var(--navy); font-size: 13px; }
+  #boot .ring {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 2.5px solid #e5e7eb; border-top-color: var(--brand);
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #boot.gone { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div id="boot"><div class="b"><div class="ring"></div><span>Loading ShipzyCart…</span></div></div>
+<div id="root"></div>
+
+<script>
+// === PREAMBLE START ===
+// === PREAMBLE START ===
+
+
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* ---------- localStorage shim mirroring the artifact's window.storage API ---------- */
+window.storage = {
+  get: async (key) => {
+    try {
+      const v = localStorage.getItem(key);
+      return v !== null ? { key, value: v } : null;
+    } catch (e) { return null; }
+  },
+  set: async (key, value) => {
+    try {
+      localStorage.setItem(key, value);
+      return { key, value };
+    } catch (e) { return null; }
+  },
+  delete: async (key) => {
+    try { localStorage.removeItem(key); return { key, deleted: true }; }
+    catch (e) { return null; }
+  },
+  list: async (prefix = "") => {
+    try {
+      const keys = Object.keys(localStorage).filter(k => k.startsWith(prefix));
+      return { keys, prefix };
+    } catch (e) { return null; }
+  },
+};
+
+/* ---------- Lucide bridge: turn vanilla lucide icon data into React components ---------- */
+function lucideIcon(name) {
+  return function Icon({ size = 24, className = "", strokeWidth, ...rest }) {
+    const lib = window.lucide;
+    const data = lib && lib.icons ? lib.icons[name] : null;
+    if (!data) {
+      return React.createElement('span', {
+        style: { display:'inline-block', width:size, height:size },
+        className,
+      });
+    }
+    // lucide icon data shape: [tag, attrs, children]
+    // children: array of [tag, attrs] (and possibly nested array)
+    const [, defaultAttrs, children] = data;
+    const renderChild = (node, key) => {
+      if (!Array.isArray(node)) return null;
+      const [t, a, c] = node;
+      const kids = Array.isArray(c) ? c.map(renderChild).filter(Boolean) : [];
+      return React.createElement(t, { ...a, key }, ...kids);
+    };
+    return React.createElement('svg', {
+      ...defaultAttrs,
+      width: size,
+      height: size,
+      strokeWidth: strokeWidth || defaultAttrs.strokeWidth || 2,
+      className,
+      ...rest,
+    }, ...(children || []).map(renderChild).filter(Boolean));
+  };
+}
+
+const Truck = lucideIcon('Truck');
+const Package = lucideIcon('Package');
+const PackageCheck = lucideIcon('PackageCheck');
+const FileText = lucideIcon('FileText');
+const Settings = lucideIcon('Settings');
+const BarChart3 = lucideIcon('BarChart3');
+const Plus = lucideIcon('Plus');
+const Search = lucideIcon('Search');
+const Filter = lucideIcon('Filter');
+const MapPin = lucideIcon('MapPin');
+const ArrowRight = lucideIcon('ArrowRight');
+const Edit3 = lucideIcon('Edit3');
+const X = lucideIcon('X');
+const Upload = lucideIcon('Upload');
+const Download = lucideIcon('Download');
+const Printer = lucideIcon('Printer');
+const Trash2 = lucideIcon('Trash2');
+const Calendar = lucideIcon('Calendar');
+const IndianRupee = lucideIcon('IndianRupee');
+const FileBarChart = lucideIcon('FileBarChart');
+const Warehouse = lucideIcon('Warehouse');
+const Box = lucideIcon('Box');
+const Boxes = lucideIcon('Boxes');
+const ChevronRight = lucideIcon('ChevronRight');
+const ChevronDown = lucideIcon('ChevronDown');
+const Building2 = lucideIcon('Building2');
+const Phone = lucideIcon('Phone');
+const User = lucideIcon('User');
+const Users = lucideIcon('Users');
+const Hash = lucideIcon('Hash');
+const Save = lucideIcon('Save');
+const CheckCircle2 = lucideIcon('CheckCircle2');
+const Clock = lucideIcon('Clock');
+const AlertCircle = lucideIcon('AlertCircle');
+const TrendingUp = lucideIcon('TrendingUp');
+const ArrowUpRight = lucideIcon('ArrowUpRight');
+const FileDown = lucideIcon('FileDown');
+const Layers = lucideIcon('Layers');
+const MoreVertical = lucideIcon('MoreVertical');
+const Eye = lucideIcon('Eye');
+const Copy = lucideIcon('Copy');
+const RefreshCw = lucideIcon('RefreshCw');
+const FileSpreadsheet = lucideIcon('FileSpreadsheet');
+const Receipt = lucideIcon('Receipt');
+const ExternalLink = lucideIcon('ExternalLink');
+const ChevronLeft = lucideIcon('ChevronLeft');
+const Share2 = lucideIcon('Share2');
+const MessageCircle = lucideIcon('MessageCircle');
+const Mail = lucideIcon('Mail');
+const Smartphone = lucideIcon('Smartphone');
+const Calculator = lucideIcon('Calculator');
+const Command = lucideIcon('Command');
+const Shield = lucideIcon('Shield');
+const Lock = lucideIcon('Lock');
+const Sparkles = lucideIcon('Sparkles');
+const FileCheck2 = lucideIcon('FileCheck2');
+const FilePlus2 = lucideIcon('FilePlus2');
+const Info = lucideIcon('Info');
+const Cloud = lucideIcon('Cloud');
+const CloudOff = lucideIcon('CloudOff');
+const Wifi = lucideIcon('Wifi');
+const WifiOff = lucideIcon('WifiOff');
+
+
+/*__APP_CODE__*/
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+
+// hide boot loader once React has rendered
+requestAnimationFrame(() => {
+  const boot = document.getElementById('boot');
+  if (boot) {
+    boot.classList.add('gone');
+    setTimeout(() => boot.remove(), 350);
+  }
+});
+
+</script>
+</body>
+</html>

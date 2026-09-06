@@ -1,0 +1,6 @@
+node_modules/
+dist/
+build/_stripped.jsx
+build/_compiled.js
+backend/ewb-functions/.env
+.DS_Store
