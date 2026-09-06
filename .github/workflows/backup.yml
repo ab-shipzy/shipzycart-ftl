@@ -1,0 +1,47 @@
+name: Firestore backup (every 6 hours)
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install firebase-admin
+        run: npm install --no-audit --no-fund firebase-admin
+
+      - name: Export Firestore
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: node scripts/backup.mjs
+
+      - name: Commit to backups branch
+        run: |
+          git config user.name "shipzy-backup-bot"
+          git config user.email "backup@shipzy.in"
+          git fetch origin backups || true
+          if git rev-parse --verify origin/backups >/dev/null 2>&1; then
+            git switch -c backups origin/backups
+          else
+            git switch --orphan backups
+          fi
+          find . -maxdepth 1 ! -name '.' ! -name '.git' ! -name 'backup-out' -exec rm -rf {} +
+          mv backup-out/* .
+          rmdir backup-out
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes since last backup."
+          else
+            git commit -m "Firestore backup $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push origin backups
+          fi
