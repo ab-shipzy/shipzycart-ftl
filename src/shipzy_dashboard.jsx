@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-67";
+const BUILD_VERSION = "v2026.05.11-68";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-68",
+    date:    "2026-09-06",
+    title:   "Welcome splash on login and fresh open",
+    highlights: [
+      "Every time a user logs in — or is already logged in and opens the domain fresh — a full-screen navy splash greets them: 'WELCOME' in teal, their name in giant type, a teal underline sweeping in. Displays for 3 seconds, then fades away on its own. Pure CSS animation, no dependencies.",
+    ],
+  },
   {
     version: "v2026.05.11-67",
     date:    "2026-09-06",
@@ -4569,6 +4577,38 @@ async function extractPdfText(file) {
 /* ============================================================
    ROOT COMPONENT
    ============================================================ */
+/* ── Welcome splash: big-font greeting on every fresh open / login ──
+   Shows for 3 seconds when currentUser transitions from null to a
+   user (covers both the login moment and an already-logged-in user
+   opening the domain fresh), then fades away. ── */
+function WelcomeSplash({ name, onDone }) {
+  const [leaving, setLeaving] = useState(false);
+  useEffect(() => {
+    const t1 = setTimeout(() => setLeaving(true), 2400);
+    const t2 = setTimeout(() => onDone && onDone(), 3000);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);
+  return (
+    <div className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center transition-opacity duration-500 ${leaving ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+      style={{ background: "linear-gradient(135deg, #00304a 0%, #004a70 55%, #006b8f 100%)" }}>
+      <style>{`
+        @keyframes wsPop { 0% { opacity: 0; transform: translateY(18px) scale(.96); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes wsLine { 0% { width: 0; } 100% { width: 120px; } }
+      `}</style>
+      <div className="text-[13px] sm:text-[16px] uppercase tracking-[0.35em] text-[#43edd4] font-bold"
+        style={{ animation: "wsPop .6s ease-out both" }}>
+        Welcome
+      </div>
+      <div className="mt-2 text-5xl sm:text-7xl font-extrabold text-white text-center px-6 leading-tight"
+        style={{ animation: "wsPop .7s .15s ease-out both", fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+        {name}
+      </div>
+      <div className="mt-5 h-[3px] rounded-full bg-[#43edd4]"
+        style={{ animation: "wsLine .8s .4s ease-out both" }} />
+    </div>
+  );
+}
+
 export default function App() {
   const [spotlightOpen, setSpotlightOpen] = useState(false);
 
@@ -4633,6 +4673,16 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
+
+  // Welcome splash — fires when a user appears (fresh open or login)
+  const [welcomeName, setWelcomeName] = useState(null);
+  const _prevUserRef = useRef(null);
+  useEffect(() => {
+    if (currentUser && !_prevUserRef.current) {
+      setWelcomeName(currentUser.name || "User");
+    }
+    _prevUserRef.current = currentUser;
+  }, [currentUser]);
   const weatherMood = useWeatherMood();
   const [showUserMenu, setShowUserMenu] = useState(false);
 
@@ -5514,6 +5564,9 @@ export default function App() {
         />
       )}
 
+      {welcomeName && (
+        <WelcomeSplash name={welcomeName} onDone={() => setWelcomeName(null)} />
+      )}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 px-5 py-3 rounded-xl bg-[#00304a] text-white shadow-2xl flex items-center gap-2 animate-[fadeIn_.2s_ease-out]">
           <CheckCircle2 className="w-4 h-4 text-[#43edd4]" />
