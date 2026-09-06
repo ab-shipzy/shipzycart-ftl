@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-65";
+const BUILD_VERSION = "v2026.05.11-66";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-66",
+    date:    "2026-09-06",
+    title:   "Analog watch in the top bar — and first GitHub auto-deploy",
+    highlights: [
+      "The top-bar clock now has a tiny analog watch face next to the digital time — navy hour hand, blue minute hand, teal second hand, ticking on the same 1-second timer. Brand colours, SVG, zero dependencies.",
+      "Milestone build: developed, built and deployed entirely through the new GitHub pipeline — pushed to github.com/ab-shipzy/shipzycart-ftl, compiled by GitHub Actions, released to Firebase Hosting automatically.",
+    ],
+  },
   {
     version: "v2026.05.11-65",
     date:    "2026-08-21",
@@ -6719,6 +6728,11 @@ function DigitalClock() {
   const mm = String(now.getMinutes()).padStart(2, "0");
   const ss = String(now.getSeconds()).padStart(2, "0");
 
+  // Analog hand angles
+  const secDeg  = now.getSeconds() * 6;
+  const minDeg  = now.getMinutes() * 6 + now.getSeconds() * 0.1;
+  const hourDeg = (now.getHours() % 12) * 30 + now.getMinutes() * 0.5;
+
   // Indian convention: "Mon, 06 May 2026"
   const dateStr = now.toLocaleDateString("en-IN", {
     weekday: "short", day: "2-digit", month: "short", year: "numeric"
@@ -6727,7 +6741,21 @@ function DigitalClock() {
   return (
     <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-md bg-white/70 backdrop-blur-sm border border-slate-200 text-[#00304a]"
       title={`Local time · ${dateStr}`}>
-      <Clock className="w-3.5 h-3.5 text-[#0074ff]" />
+      {/* Analog watch — hands driven by the same 1s tick */}
+      <svg width="22" height="22" viewBox="0 0 40 40" className="shrink-0">
+        <circle cx="20" cy="20" r="18.5" fill="white" stroke="#00304a" strokeWidth="2" />
+        {[0, 90, 180, 270].map(a => (
+          <line key={a} x1="20" y1="3.5" x2="20" y2="7"
+            stroke="#94a3b8" strokeWidth="1.6" transform={`rotate(${a} 20 20)`} />
+        ))}
+        <line x1="20" y1="20" x2="20" y2="11.5" stroke="#00304a" strokeWidth="2.6" strokeLinecap="round"
+          transform={`rotate(${hourDeg} 20 20)`} />
+        <line x1="20" y1="20" x2="20" y2="7.5" stroke="#0074ff" strokeWidth="1.8" strokeLinecap="round"
+          transform={`rotate(${minDeg} 20 20)`} />
+        <line x1="20" y1="22.5" x2="20" y2="6" stroke="#43edd4" strokeWidth="1" strokeLinecap="round"
+          transform={`rotate(${secDeg} 20 20)`} />
+        <circle cx="20" cy="20" r="1.8" fill="#00304a" />
+      </svg>
       <span className="font-mono text-[12px] font-bold tabular-nums tracking-tight" style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
         {hh}:{mm}<span className="hidden md:inline">:{ss}</span>
       </span>
