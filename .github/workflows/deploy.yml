@@ -20,6 +20,7 @@ jobs:
         run: python3 build/build.py
 
       - name: Deploy Firestore rules
+        continue-on-error: true
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
