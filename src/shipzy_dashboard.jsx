@@ -20,9 +20,19 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-66";
+const BUILD_VERSION = "v2026.05.11-67";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-67",
+    date:    "2026-09-06",
+    title:   "Shipment deletion locked company-wide + automatic 6-hour backups",
+    highlights: [
+      "Shipment deletion is now DISABLED for everyone — super-admin, admin, finance, ops, and all sub-users, covering both soft delete and permanent purge. Enforced in code inside userCan(), so no role configuration, cloud-sync push, or Roles-editor change can re-enable it; every delete button disappears and any direct call shows 'Shipment deletion is disabled company-wide.' Restore and view-deleted remain available.",
+      "Firestore rules hardened: state documents (which hold shipments, warehouses, billing and config) can never be deleted at the database level, by any signed-in user. Rules now auto-deploy with every push via the CI pipeline.",
+      "Automatic database backups every 6 hours: a scheduled GitHub Action exports every workspace's complete Firestore state to the repo's 'backups' branch as readable JSON. Git history keeps every snapshot forever — any point in time is one checkout away. Can also be run on demand from the Actions tab.",
+    ],
+  },
   {
     version: "v2026.05.11-66",
     date:    "2026-09-06",
@@ -1485,6 +1495,15 @@ function defaultRoles() {
 function userCan(user, capability, roles) {
   if (!user) return false;
   if (!Array.isArray(roles) || roles.length === 0) return false;
+
+  // ─── COMPANY-WIDE LOCK (v67): shipment deletion is disabled for ───
+  // ─── EVERYONE — super-admin, admin, finance, ops, all sub-users. ───
+  // Applies to both soft delete and permanent purge. Restore and
+  // view-deleted remain available. To ever re-enable, this block must
+  // be removed in code — no role configuration can override it.
+  if (capability === "delete-shipment" || capability === "purge-shipment") {
+    return false;
+  }
 
   // ─── Hardcoded role restrictions (enforced at code level) ───
   // These overrides protect against the role configuration being
@@ -5452,11 +5471,11 @@ export default function App() {
             showToast("Shipment updated");
           }}
           onDelete={(id, opts) => {
-            // Defence in depth — even though the drawer's Delete button is
-            // gated on userCan("delete-shipment"), we re-check here so no
-            // code path can bypass the OPS_FORBIDDEN_CAPS restriction.
+            // v67: shipment deletion is disabled company-wide. userCan()
+            // already returns false for everyone; this re-check makes the
+            // handler safe even if called directly.
             if (!userCan(currentUser, "delete-shipment", roles)) {
-              showToast("You don't have permission to delete shipments.");
+              showToast("Shipment deletion is disabled company-wide.");
               return;
             }
             // Soft-delete: stamp deletedAt/By/Reason so the shipment moves
