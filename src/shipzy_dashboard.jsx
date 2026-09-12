@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-79";
+const BUILD_VERSION = "v2026.05.11-80";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-80",
+    date:    "2026-09-12",
+    title:   "Share LR runs in the background with completion notifications",
+    highlights: [
+      "Hitting Send now no longer holds the dialog open: it closes instantly with a 'Sharing LR in background' note, and the heavy lifting (PDF rendering, email, WhatsApp upload) happens behind the scenes while you keep working.",
+      "When it finishes, a notification appears at the top: '✉️ Email sent (3) · 📱 WhatsApp sent (2/2) · LR PDF'. Failures show exactly what failed and why; template fallbacks for new contacts get their own follow-up note. Toasts stay a little longer to be readable.",
+    ],
+  },
   {
     version: "v2026.05.11-79",
     date:    "2026-09-12",
@@ -5323,7 +5332,7 @@ export default function App() {
 
   const showToast = (msg, kind = "ok") => {
     setToast({ msg, kind, t: Date.now() });
-    setTimeout(() => setToast(null), 2400);
+    setTimeout(() => setToast(null), 3200);
   };
 
   /* persistence wrappers */
@@ -14590,7 +14599,13 @@ function ShareLrModal({ s, warehouses, vehicles, vendors, billingClients, onClos
     const wa = [...waSel, ...splitList(extraWa)];
     if (sendEmail && to.length === 0 && (!sendWa || wa.length === 0)) { setResult({ kind: "err", msg: "Pick at least one recipient." }); return; }
     if (!sendEmail && (!sendWa || wa.length === 0)) { setResult({ kind: "err", msg: "Pick at least one recipient." }); return; }
-    setBusy(true); setResult(null);
+    // Fire-and-notify: close the dialog immediately, do the heavy work
+    // (PDF render, SMTP, WhatsApp upload) in the background, and surface
+    // the outcome as top toasts when done.
+    const emailCount = sendEmail ? to.length + cc.length : 0;
+    const waCount = sendWa ? wa.length : 0;
+    showToast && showToast("Sharing LR in background — you'll get a notification…");
+    onClose();
     try {
       const lines = detailLines();
       const waText = `🚚 *Shipzy Logistics — ${draftMode ? "Draft " : ""}LR*\n\n` + lines.map(l => {
@@ -14620,13 +14635,17 @@ function ShareLrModal({ s, warehouses, vehicles, vendors, billingClients, onClos
       const res = await callFtlApi("/apiShareLr", { method: "POST", body: payload });
       const d = (res && res.data) || {};
       const bits = [];
-      if (sendEmail && to.length) bits.push(d.emailOk ? `✓ Email sent to ${to.length + cc.length} recipient${to.length + cc.length > 1 ? "s" : ""}` : `✗ Email: ${d.emailError || "failed"}`);
-      if (sendWa && wa.length) bits.push(`WhatsApp: ${d.waSent || 0}/${wa.length} sent${d.pdf ? " (LR PDF attached)" : ""}${d.waErrors?.length ? ` (${d.waErrors[0]})` : ""}`);
-      setResult({ kind: d.emailOk !== false && !(d.waErrors || []).length ? "ok" : "warn", msg: bits.join(" · ") || "Done." });
-      showToast && showToast("LR shared");
+      if (emailCount) bits.push(d.emailOk ? `✉️ Email sent (${emailCount})` : `✉️ Email failed: ${(d.emailError || "error").slice(0, 60)}`);
+      if (waCount) bits.push((d.waSent || 0) > 0
+        ? `📱 WhatsApp sent (${d.waSent}/${waCount})${d.pdf ? " · LR PDF" : ""}`
+        : `📱 WhatsApp failed${d.waErrors?.length ? `: ${d.waErrors[0].slice(0, 50)}` : ""}`);
+      const allOk = (!emailCount || d.emailOk) && (!waCount || (d.waSent || 0) === waCount);
+      showToast && showToast(bits.join("  ·  ") || "LR shared", allOk ? "ok" : "warn");
+      const note = (d.waErrors || []).find(e => /via template/.test(e));
+      if (note && showToast) setTimeout(() => showToast(`📱 ${note}`), 2600);
     } catch (e) {
-      setResult({ kind: "err", msg: e.message || "Sending failed" });
-    } finally { setBusy(false); }
+      showToast && showToast(`LR sharing failed: ${(e.message || "error").slice(0, 80)}`, "warn");
+    }
   };
 
   const Chip = ({ v, on, tog, mono }) => (
