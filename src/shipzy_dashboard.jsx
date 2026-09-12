@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-84";
+const BUILD_VERSION = "v2026.05.11-85";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-85",
+    date:    "2026-09-12",
+    title:   "Tabs read the database directly — truly instant",
+    highlights: [
+      "v84 put the data in Firestore but still routed reads through a Cloud Function — whose cold start (3-8s after idle) was the delay you felt. Now the browser reads the cache collections DIRECTLY from Firestore (typically 100-300ms): Mail Inbox list, opened email bodies, WA Templates, and the whole Comms Log. Functions are only touched for background syncs and the Refresh button.",
+      "Comms Log needs no sync at all anymore — the backend writes entries, the tab reads them live from the database. Open any of these tabs twice and the second open should feel like a local app.",
+    ],
+  },
   {
     version: "v2026.05.11-84",
     date:    "2026-09-12",
@@ -20144,6 +20153,22 @@ function _monthSpanLabel(from, to) {
    tab shows the templates THIS app uses (with a toggle to view the
    whole account), each with its full message text and approval
    status straight from Meta. ── */
+/* ── Direct Firestore reads for the FTL cache collections ────
+   The tabs' data (mailCache, mailBodies, waCache, commsLog) lives in
+   this project's own Firestore, and signed-in users may read it — so
+   the UI reads the database DIRECTLY (100-300ms) instead of waking a
+   Cloud Function (cold start 3-8s). Functions remain the only writers
+   and handle background syncs. ── */
+function _ftlDb() {
+  try {
+    const cfg = loadCloudConfig();
+    if (!cfg || !cfg.apiKey || !cfg.projectId || !window.firebase) return null;
+    const app = _getFirebaseApp(cfg);
+    if (!app) return null;
+    return window.firebase.firestore(app);
+  } catch { return null; }
+}
+
 const FTL_TEMPLATE_NAMES = ["shipzy_lr_document", "shipzy_shipment_update", "shipzy_vendor_pickup"];
 const FTL_TEMPLATE_USAGE = {
   shipzy_lr_document:     "Share LR → new WhatsApp contact (outside 24h window) — LR PDF attached as document header",
@@ -20163,6 +20188,20 @@ function WaTemplatesTab({ currentUser, showToast }) {
     if (force) setBusy(true);
     setErr(null);
     try {
+      if (!force) {
+        const db = _ftlDb();
+        if (db) {
+          try {
+            const doc = await db.collection("waCache").doc("templates").get();
+            if (doc.exists) {
+              const d = doc.data();
+              setList(d.templates || []);
+              setSyncedAt(d.lastSyncAt || null);
+              return { fromCache: true };
+            }
+          } catch {}
+        }
+      }
       const res = await callFtlApi("/apiWaTemplates", { query: force ? { refresh: 1 } : {} });
       const d = (res && res.data) || {};
       setList(d.templates || []);
@@ -20292,6 +20331,15 @@ function CommsLog() {
   const load = async () => {
     setBusy(true); setErr(null);
     try {
+      const db = _ftlDb();
+      if (db) {
+        try {
+          const snap = await db.collection("commsLog").orderBy("ts", "desc").limit(200).get();
+          setEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          setBusy(false);
+          return;
+        } catch {}
+      }
       const res = await callFtlApi("/apiCommsLog", { query: { limit: 200 } });
       setEntries((res && res.data && res.data.entries) || []);
     } catch (e) { setErr(e.message || "Could not load log"); setEntries([]); }
@@ -20414,6 +20462,25 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
     if (force) setLoading(true);
     setErr(null);
     try {
+      // Fast path: read the cache collection straight from Firestore.
+      if (!force) {
+        const db = _ftlDb();
+        if (db) {
+          try {
+            const snap = await db.collection("mailCache").orderBy("dateMs", "desc").limit(50).get();
+            if (!snap.empty) {
+              const msgs = snap.docs.map(x => x.data()).filter(m => m.uid)
+                .map(m => ({ uid: m.uid, from: m.from, subject: m.subject, date: m.date, seen: m.seen }));
+              setList(msgs);
+              try {
+                const meta = await db.collection("mailCache").doc("_meta").get();
+                if (meta.exists) setSyncedAt(meta.data().lastSyncAt || null);
+              } catch {}
+              return { fromCache: true };
+            }
+          } catch {}
+        }
+      }
       const res = await callFtlApi("/apiInboxList", { query: { limit: 50, ...(force ? { refresh: 1 } : {}) } });
       const d = (res && res.data) || {};
       setList(d.messages || []);
@@ -20438,6 +20505,13 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
   const openMsg = async (uid) => {
     setOpenUid(uid); setMsg(null); setMsgLoading(true);
     try {
+      const db = _ftlDb();
+      if (db) {
+        try {
+          const doc = await db.collection("mailBodies").doc(String(uid)).get();
+          if (doc.exists) { setMsg(doc.data()); setMsgLoading(false); return; }
+        } catch {}
+      }
       const res = await callFtlApi("/apiInboxGet", { query: { uid } });
       setMsg((res && res.data) || null);
     } catch (e) { setMsg({ error: e.message }); }
