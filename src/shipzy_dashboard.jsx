@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-74";
+const BUILD_VERSION = "v2026.05.11-75";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-75",
+    date:    "2026-09-12",
+    title:   "Unlink from Mail Inbox",
+    highlights: [
+      "The Mail Inbox detail view now has an Unlink button right next to the green 'Linked to LR' badge — wrong link? Fix it where you made it, then link the correct LR. (The shipment drawer's Booking tab keeps its own unlink too.)",
+    ],
+  },
   {
     version: "v2026.05.11-74",
     date:    "2026-09-12",
@@ -20040,6 +20048,15 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
     showToast && showToast(`Email linked to ${sh?.lrNumber || sh?.awb}`);
   };
 
+  const unlinkFromShipment = (uid) => {
+    const owner = uidLinks.get(String(uid));
+    if (!owner) return;
+    const next = shipments.map(s => s.id !== owner.id ? s
+      : { ...s, linkedEmails: (s.linkedEmails || []).filter(x => String(x.uid) !== String(uid)) });
+    persistShipments(next);
+    showToast && showToast(`Email unlinked from ${owner.lrNumber || owner.awb}`);
+  };
+
   const searchShipments = (q) => {
     const needle = q.trim().toLowerCase();
     return (shipments || [])
@@ -20117,7 +20134,11 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
                   <div className="text-[10.5px] text-slate-500 mt-0.5">{msg.from} → {msg.to}{msg.cc ? ` · cc ${msg.cc}` : ""} · {fmtDate(msg.date)}</div>
                   <div className="flex items-center gap-2 mt-2 flex-wrap">
                     {uidLinks.get(String(openUid)) ? (
-                      <span className="text-[10px] font-bold px-2 py-1 rounded bg-emerald-100 text-emerald-700">Linked to {uidLinks.get(String(openUid)).lrNumber || uidLinks.get(String(openUid)).awb}</span>
+                      <>
+                        <span className="text-[10px] font-bold px-2 py-1 rounded bg-emerald-100 text-emerald-700">Linked to {uidLinks.get(String(openUid)).lrNumber || uidLinks.get(String(openUid)).awb}</span>
+                        <button onClick={() => unlinkFromShipment(openUid)}
+                          className="px-2 py-1 rounded border border-rose-200 text-[10px] font-bold text-rose-500 hover:bg-rose-50">Unlink</button>
+                      </>
                     ) : linkFor === openUid ? (
                       <div className="w-64">
                         <SuggestInput selected={null}
