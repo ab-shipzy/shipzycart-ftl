@@ -842,7 +842,15 @@ exports.apiIntegrations = functions
       if (b.action === "save") {
         const allowed = ["smtpHost","smtpPort","smtpUser","smtpPass","mailFrom","waPhoneId","waToken","imapUser","imapPass"];
         const patch = {};
-        allowed.forEach(k => { if (b.config && typeof b.config[k] === "string" && b.config[k].trim() !== "") patch[k] = b.config[k].trim(); });
+        allowed.forEach(k => {
+          if (b.config && typeof b.config[k] === "string" && b.config[k].trim() !== "") {
+            let v = b.config[k].trim();
+            // Google app passwords are shown as "abcd efgh ijkl mnop" — the
+            // real password has no spaces. Strip them for password fields.
+            if (k === "smtpPass" || k === "imapPass") v = v.replace(/\s+/g, "");
+            patch[k] = v;
+          }
+        });
         if (!Object.keys(patch).length) return res.status(400).json({ ok: false, error: "No fields to save" });
         await admin.firestore().collection("integrations").doc("config").set(patch, { merge: true });
         _icfgCache = { at: 0, val: null };
