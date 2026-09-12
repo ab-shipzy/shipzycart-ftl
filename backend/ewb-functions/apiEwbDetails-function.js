@@ -899,7 +899,12 @@ async function imapConnect() {
     auth: { user, pass },
     logger: false,
   });
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (e) {
+    const detail = e.responseText || e.response || e.message || "connect failed";
+    throw new Error(`IMAP login failed for ${user}: ${detail}`);
+  }
   return client;
 }
 
