@@ -699,7 +699,7 @@ function sendSmtpMail({ to, cc, subject, text, html, attachment }) {
       to: to.join(", "),
       cc: cc && cc.length ? cc.join(", ") : undefined,
       subject, text, html,
-      attachments: attachment ? [{ filename: attachment.filename, content: attachment.content, contentType: "text/html" }] : [],
+      attachments: attachment ? [{ filename: attachment.filename, content: attachment.content, contentType: attachment.contentType || "text/html" }] : [],
     }, (err) => {
       if (err) resolve({ ok: false, error: String(err.message || err).slice(0, 200) });
       else resolve({ ok: true });
@@ -743,9 +743,65 @@ function waSendText(phoneId, token, toNumber, body) {
   });
 }
 
+
+/* ── LR PDF rendering (headless Chromium) + WhatsApp document send ── */
+async function renderPdfFromHtml(html) {
+  const chromium = require("@sparticuz/chromium");
+  const puppeteer = require("puppeteer-core");
+  const browser = await puppeteer.launch({
+    args: chromium.args,
+    defaultViewport: { width: 1240, height: 1754 },
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless,
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0", timeout: 30000 });
+    const pdf = await page.pdf({
+      format: "A4",
+      printBackground: true,
+      margin: { top: "8mm", bottom: "8mm", left: "7mm", right: "7mm" },
+    });
+    return Buffer.from(pdf);
+  } finally {
+    try { await browser.close(); } catch {}
+  }
+}
+
+async function waUploadMedia(phoneId, token, buffer, filename) {
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", "application/pdf");
+  form.append("file", new Blob([buffer], { type: "application/pdf" }), filename);
+  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/media`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}` },
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) throw new Error(data.error?.message || `media upload failed (HTTP ${res.status})`);
+  return data.id;
+}
+
+async function waSendDocument(phoneId, token, toNumber, mediaId, filename, caption) {
+  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: toNumber,
+      type: "document",
+      document: { id: mediaId, filename, caption: String(caption || "").slice(0, 1024) },
+    }),
+  });
+  if (res.ok) return { ok: true };
+  const data = await res.json().catch(() => ({}));
+  return { ok: false, error: (data.error?.message || `HTTP ${res.status}`).slice(0, 160) };
+}
+
 exports.apiShareLr = functions
   .region("us-central1")
-  .runWith({ timeoutSeconds: 120, memory: "256MB" })
+  .runWith({ timeoutSeconds: 300, memory: "1GB" })
   .https.onRequest(async (req, res) => {
     res.set("Access-Control-Allow-Origin", "*");
     res.set("Access-Control-Allow-Headers", "Content-Type, X-Shipzy-API-Key");
@@ -765,7 +821,20 @@ exports.apiShareLr = functions
         .filter(n => n.length >= 11);
 
       const icfg = await getIntegrations();
-      const out = { emailOk: null, emailError: null, waSent: 0, waErrors: [] };
+      const out = { emailOk: null, emailError: null, waSent: 0, waErrors: [], pdf: false };
+
+      // Render the LR as a real PDF once — used by BOTH email and WhatsApp.
+      let pdfBuf = null;
+      let pdfName = String(b.filename || "LR.pdf").replace(/\.html?$/i, "") + ".pdf";
+      pdfName = pdfName.replace(/\.pdf\.pdf$/i, ".pdf");
+      if (b.lrHtml) {
+        try {
+          pdfBuf = await renderPdfFromHtml(String(b.lrHtml));
+          out.pdf = true;
+        } catch (e) {
+          out.waErrors.push(`PDF render failed: ${String(e.message || e).slice(0, 120)}`);
+        }
+      }
 
       if (to.length > 0) {
         const mail = await sendSmtpMail({
@@ -774,7 +843,9 @@ exports.apiShareLr = functions
           subject: String(b.subject || "LR — Shipzy Logistics").slice(0, 200),
           text: String(b.text || ""),
           html: String(b.detailsHtml || ""),
-          attachment: b.lrHtml ? { filename: String(b.filename || "LR.html"), content: String(b.lrHtml) } : null,
+          attachment: pdfBuf
+            ? { filename: pdfName, content: pdfBuf, contentType: "application/pdf" }
+            : (b.lrHtml ? { filename: String(b.filename || "LR.html"), content: String(b.lrHtml), contentType: "text/html" } : null),
         });
         out.emailOk = mail.ok;
         if (!mail.ok) out.emailError = mail.error;
@@ -785,8 +856,21 @@ exports.apiShareLr = functions
         if (!phoneId || !token) {
           out.waErrors.push("WhatsApp not configured — set it in Settings → Integrations");
         } else {
+          // With a PDF: upload once, send as a document (with caption) to all;
+          // fall back to plain text per-number if the document send fails.
+          let mediaId = null;
+          if (pdfBuf) {
+            try { mediaId = await waUploadMedia(phoneId, token, pdfBuf, pdfName); }
+            catch (e) { out.waErrors.push(`WA media: ${String(e.message || e).slice(0, 120)}`); }
+          }
           for (const num of waNumbers) {
-            const r = await waSendText(phoneId, token, num, String(b.waText || b.text || ""));
+            let r;
+            if (mediaId) {
+              r = await waSendDocument(phoneId, token, num, mediaId, pdfName, String(b.waText || b.text || ""));
+              if (!r.ok) r = await waSendText(phoneId, token, num, String(b.waText || b.text || ""));
+            } else {
+              r = await waSendText(phoneId, token, num, String(b.waText || b.text || ""));
+            }
             if (r.ok) out.waSent++;
             else out.waErrors.push(`${num}: ${r.error}`.slice(0, 120));
           }

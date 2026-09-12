@@ -20,9 +20,19 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-75";
+const BUILD_VERSION = "v2026.05.11-76";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-76",
+    date:    "2026-09-12",
+    title:   "LR goes as a real PDF — on WhatsApp AND email",
+    highlights: [
+      "The backend now renders the LR into a proper A4 PDF (headless Chrome on the server). WhatsApp recipients receive the LR as a PDF document with the details as its caption — no more text-only. If the PDF can't be produced or sent for any reason, the formatted text message still goes out as fallback.",
+      "Email upgrade too: the attachment is now the same real PDF (LR-XXXX.pdf) instead of an HTML file — opens everywhere, prints perfectly, ready for billing evidence.",
+      "First share after a quiet period takes ~15-20 seconds extra (the PDF engine cold-starts) — the Sending… spinner covers it; subsequent shares are quick.",
+    ],
+  },
   {
     version: "v2026.05.11-75",
     date:    "2026-09-12",
@@ -14533,9 +14543,9 @@ function ShareLrModal({ s, warehouses, vehicles, vendors, billingClients, onClos
       const payload = {
         subject: `${draftMode ? "Draft " : ""}LR ${s.lrNumber || s.awb} — ${pickup?.city || "?"} → ${delivery?.city || "?"} — Shipzy Logistics`,
         text: lines.join("\n"),
-        detailsHtml: `<div style="font-family:Arial,sans-serif;font-size:13px;color:#111"><h2 style="color:#00304a;margin:0 0 4px">${draftMode ? "Draft " : ""}LR ${escapeHtml(s.lrNumber || "")}</h2><p>${lines.map(escapeHtml).join("<br>")}</p><p style="color:#666;font-size:11px">The ${draftMode ? "draft " : ""}LR copy is attached (open in any browser, print to save as PDF).</p></div>`,
+        detailsHtml: `<div style="font-family:Arial,sans-serif;font-size:13px;color:#111"><h2 style="color:#00304a;margin:0 0 4px">${draftMode ? "Draft " : ""}LR ${escapeHtml(s.lrNumber || "")}</h2><p>${lines.map(escapeHtml).join("<br>")}</p><p style="color:#666;font-size:11px">The ${draftMode ? "draft " : ""}LR copy is attached as PDF.</p></div>`,
         lrHtml,
-        filename: `${draftMode ? "DRAFT-" : ""}LR-${(s.lrNumber || s.awb || "shipment").replace(/[^\w-]/g, "_")}.html`,
+        filename: `${draftMode ? "DRAFT-" : ""}LR-${(s.lrNumber || s.awb || "shipment").replace(/[^\w-]/g, "_")}.pdf`,
         to: sendEmail ? to : [],
         cc: sendEmail ? cc : [],
         waNumbers: sendWa ? wa : [],
@@ -14545,7 +14555,7 @@ function ShareLrModal({ s, warehouses, vehicles, vendors, billingClients, onClos
       const d = (res && res.data) || {};
       const bits = [];
       if (sendEmail && to.length) bits.push(d.emailOk ? `✓ Email sent to ${to.length + cc.length} recipient${to.length + cc.length > 1 ? "s" : ""}` : `✗ Email: ${d.emailError || "failed"}`);
-      if (sendWa && wa.length) bits.push(`WhatsApp: ${d.waSent || 0}/${wa.length} sent${d.waErrors?.length ? ` (${d.waErrors[0]})` : ""}`);
+      if (sendWa && wa.length) bits.push(`WhatsApp: ${d.waSent || 0}/${wa.length} sent${d.pdf ? " (LR PDF attached)" : ""}${d.waErrors?.length ? ` (${d.waErrors[0]})` : ""}`);
       setResult({ kind: d.emailOk !== false && !(d.waErrors || []).length ? "ok" : "warn", msg: bits.join(" · ") || "Done." });
       showToast && showToast("LR shared");
     } catch (e) {
@@ -14609,7 +14619,7 @@ function ShareLrModal({ s, warehouses, vehicles, vendors, billingClients, onClos
 
           <div className="rounded-md border border-slate-200 p-3">
             <label className="flex items-center gap-2 text-[12px] font-bold text-[#00304a]">
-              <input type="checkbox" checked={sendWa} onChange={(e) => setSendWa(e.target.checked)} className="accent-[#25D366]" /> WhatsApp — LR & vehicle details
+              <input type="checkbox" checked={sendWa} onChange={(e) => setSendWa(e.target.checked)} className="accent-[#25D366]" /> WhatsApp — LR PDF + details
             </label>
             {sendWa && (
               <div className="mt-2 space-y-1.5">
