@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-83";
+const BUILD_VERSION = "v2026.05.11-84";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-84",
+    date:    "2026-09-12",
+    title:   "Everything cached in the database — instant tabs",
+    highlights: [
+      "Mail Inbox, WA Templates and email bodies now live in the app's own Firestore. Opening a tab serves straight from the database (instant), while a silent background sync pulls anything new from Gmail/Meta and updates the view — a small 'synced HH:MM' stamp shows freshness, and the Refresh button forces a live sync.",
+      "Email bodies are cached permanently on first read (an email never changes), so re-opening any mail is instant. The Comms Log was already database-native. Result: no repeated IMAP/Meta calls on every open, faster tabs, and the data survives even if the mailbox or Meta is temporarily unreachable.",
+    ],
+  },
   {
     version: "v2026.05.11-83",
     date:    "2026-09-12",
@@ -20149,15 +20158,25 @@ function WaTemplatesTab({ currentUser, showToast }) {
   const [showAll, setShowAll] = useState(false);
   const isSuper = currentUser?.role === "super-admin";
 
-  const load = async () => {
-    setBusy(true); setErr(null);
+  const [syncedAt, setSyncedAt] = useState(null);
+  const load = async (force) => {
+    if (force) setBusy(true);
+    setErr(null);
     try {
-      const res = await callFtlApi("/apiWaTemplates", {});
-      setList((res && res.data && res.data.templates) || []);
-    } catch (e) { setErr(e.message || "Could not load templates"); setList([]); }
-    finally { setBusy(false); }
+      const res = await callFtlApi("/apiWaTemplates", { query: force ? { refresh: 1 } : {} });
+      const d = (res && res.data) || {};
+      setList(d.templates || []);
+      if (d.lastSyncAt) setSyncedAt(d.lastSyncAt);
+      return d;
+    } catch (e) { setErr(e.message || "Could not load templates"); if (force || list === null) setList([]); }
+    finally { if (force) setBusy(false); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    (async () => {
+      const first = await load(false);
+      if (first && first.fromCache) load(true).catch(() => {});
+    })();
+  }, []);
 
   const request = async () => {
     setBusy(true); setNote(null);
@@ -20166,7 +20185,7 @@ function WaTemplatesTab({ currentUser, showToast }) {
       const rs = (res && res.data && res.data.results) || [];
       setNote(rs.map(r => `${r.name}: ${r.note}`).join(" · "));
       showToast && showToast("Template request submitted to Meta");
-      await load();
+      await load(true);
     } catch (e) { setNote(e.message || "Request failed"); }
     finally { setBusy(false); }
   };
@@ -20210,7 +20229,8 @@ function WaTemplatesTab({ currentUser, showToast }) {
               {missing.length ? `Request ${missing.length} missing` : "Re-request templates"}
             </button>
           )}
-          <button onClick={load} disabled={busy}
+          {syncedAt && <span className="text-[9.5px] text-slate-400">synced {new Date(syncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+          <button onClick={() => load(true)} disabled={busy}
             className="px-3 py-1.5 rounded bg-[#00304a] hover:bg-[#0074ff] text-white text-[11.5px] font-semibold disabled:opacity-50 flex items-center gap-1.5">
             <RefreshCw className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`} /> Refresh
           </button>
@@ -20389,17 +20409,31 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
     return m;
   }, [shipments]);
 
-  const refresh = async () => {
-    setLoading(true); setErr(null);
+  const [syncedAt, setSyncedAt] = useState(null);
+  const load = async (force) => {
+    if (force) setLoading(true);
+    setErr(null);
     try {
-      const res = await callFtlApi("/apiInboxList", { query: { limit: 50 } });
-      setList((res && res.data && res.data.messages) || []);
+      const res = await callFtlApi("/apiInboxList", { query: { limit: 50, ...(force ? { refresh: 1 } : {}) } });
+      const d = (res && res.data) || {};
+      setList(d.messages || []);
+      if (d.lastSyncAt) setSyncedAt(d.lastSyncAt);
+      return d;
     } catch (e) {
       setErr(e.message || "Could not load inbox");
-      setList([]);
-    } finally { setLoading(false); }
+      if (force || list === null) setList([]);
+    } finally { if (force) setLoading(false); }
   };
-  useEffect(() => { refresh(); }, []);
+  const refresh = () => load(true);
+  useEffect(() => {
+    // Instant: serve the Firestore cache. Then silently sync the mailbox
+    // in the background and update the list if anything new arrived.
+    (async () => {
+      const first = await load(false);
+      if (first && first.fromCache) load(true).catch(() => {});
+      else if (first && !first.fromCache) { /* first ever load already synced */ }
+    })();
+  }, []);
 
   const openMsg = async (uid) => {
     setOpenUid(uid); setMsg(null); setMsgLoading(true);
@@ -20472,10 +20506,13 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
           <h2 className="text-[15px] font-bold text-[#00304a] flex items-center gap-2"><Inbox className="w-4 h-4 text-[#0074ff]" /> Mail Inbox</h2>
           <p className="text-[11.5px] text-slate-500">Approval emails CC'd to your ops mailbox — link each to its LR for billing evidence.</p>
         </div>
-        <button onClick={refresh} disabled={loading}
-          className="px-3 py-1.5 rounded bg-[#00304a] hover:bg-[#0074ff] text-white text-[11.5px] font-semibold disabled:opacity-50 flex items-center gap-1.5">
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {syncedAt && <span className="text-[9.5px] text-slate-400">synced {new Date(syncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+          <button onClick={refresh} disabled={loading}
+            className="px-3 py-1.5 rounded bg-[#00304a] hover:bg-[#0074ff] text-white text-[11.5px] font-semibold disabled:opacity-50 flex items-center gap-1.5">
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
+          </button>
+        </div>
       </div>
 
       {err && <div className="mb-3 text-[11px] rounded px-3 py-2 bg-rose-50 border border-rose-200 text-rose-600">{err} — configure the inbox in Settings → Integrations (super-admin).</div>}

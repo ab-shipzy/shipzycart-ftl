@@ -926,15 +926,29 @@ exports.apiWaTemplates = functions
       if (!info.wabaId) return res.status(500).json({ ok: false, error: "WhatsApp Business Account ID not found automatically — paste your WABA ID in Settings → Integrations (WhatsApp section) and save" });
 
       if (req.method === "GET") {
+        const wantRefresh = String(req.query.refresh || "") === "1";
+        if (!wantRefresh) {
+          try {
+            const doc = await admin.firestore().collection("waCache").doc("templates").get();
+            if (doc.exists) {
+              const d = doc.data();
+              return res.json({ ok: true, data: { wabaId: d.wabaId, templates: d.templates || [], fromCache: true, lastSyncAt: d.lastSyncAt || null } });
+            }
+          } catch {}
+        }
         const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/message_templates?fields=name,status,category,language,components,rejected_reason,quality_score&limit=100&access_token=${encodeURIComponent(token)}`);
         const j = await r.json().catch(() => ({}));
         if (j.error) return res.status(502).json({ ok: false, error: j.error.message });
-        return res.json({ ok: true, data: { wabaId: info.wabaId, templates: (j.data || []).map(t => ({
+        const templates = (j.data || []).map(t => ({
           name: t.name, status: t.status, category: t.category, language: t.language,
           rejectedReason: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null,
           quality: t.quality_score?.score || null,
           components: (t.components || []).map(c => ({ type: c.type, format: c.format || null, text: c.text || null })),
-        })) } });
+        }));
+        try {
+          await admin.firestore().collection("waCache").doc("templates").set({ wabaId: info.wabaId, templates, lastSyncAt: Date.now() });
+        } catch {}
+        return res.json({ ok: true, data: { wabaId: info.wabaId, templates, fromCache: false, lastSyncAt: Date.now() } });
       }
 
       const b = req.body || {};
@@ -1233,6 +1247,21 @@ exports.apiInboxList = functions
     try {
       if (!(await verifyApiKey(req))) return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
       const limit = Math.min(Number(req.query.limit || 50), 100);
+      const wantRefresh = String(req.query.refresh || "") === "1";
+
+      // Serve from the Firestore cache instantly unless a refresh is asked for.
+      if (!wantRefresh) {
+        try {
+          const snap = await admin.firestore().collection("mailCache")
+            .orderBy("dateMs", "desc").limit(limit).get();
+          if (!snap.empty) {
+            const messages = snap.docs.map(d => { const x = d.data(); return { uid: x.uid, from: x.from, subject: x.subject, date: x.date, seen: x.seen }; });
+            const metaDoc = await admin.firestore().collection("mailCache").doc("_meta").get().catch(() => null);
+            return res.json({ ok: true, data: { messages: messages.filter(m => m.uid), fromCache: true, lastSyncAt: metaDoc?.exists ? metaDoc.data().lastSyncAt : null } });
+          }
+        } catch {}
+      }
+
       client = await imapConnect();
       const lock = await client.getMailboxLock("INBOX");
       const messages = [];
@@ -1255,7 +1284,21 @@ exports.apiInboxList = functions
       } finally { lock.release(); }
       await client.logout();
       messages.reverse(); // newest first
-      return res.json({ ok: true, data: { messages } });
+
+      // Persist to the Firestore cache so subsequent opens are instant.
+      try {
+        const db = admin.firestore();
+        const batch = db.batch();
+        messages.forEach(m => {
+          batch.set(db.collection("mailCache").doc(String(m.uid)), {
+            ...m, dateMs: m.date ? new Date(m.date).getTime() : 0,
+          }, { merge: true });
+        });
+        batch.set(db.collection("mailCache").doc("_meta"), { lastSyncAt: Date.now() }, { merge: true });
+        await batch.commit();
+      } catch {}
+
+      return res.json({ ok: true, data: { messages, fromCache: false, lastSyncAt: Date.now() } });
     } catch (e) {
       try { client && client.close(); } catch {}
       return res.status(500).json({ ok: false, error: e.message || "Inbox error" });
@@ -1274,6 +1317,13 @@ exports.apiInboxGet = functions
       if (!(await verifyApiKey(req))) return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
       const uid = Number(req.query.uid || 0);
       if (!uid) return res.status(400).json({ ok: false, error: "uid required" });
+
+      // Body cache: an email's content never changes — read once, keep forever.
+      try {
+        const doc = await admin.firestore().collection("mailBodies").doc(String(uid)).get();
+        if (doc.exists) return res.json({ ok: true, data: doc.data() });
+      } catch {}
+
       client = await imapConnect();
       const lock = await client.getMailboxLock("INBOX");
       let parsed = null;
@@ -1285,14 +1335,20 @@ exports.apiInboxGet = functions
       } finally { lock.release(); }
       await client.logout();
       const addr = (a) => a && a.text ? a.text : "";
-      return res.json({ ok: true, data: {
+      const out = {
         uid,
         subject: parsed.subject || "",
         from: addr(parsed.from), to: addr(parsed.to), cc: addr(parsed.cc),
         date: parsed.date ? new Date(parsed.date).toISOString() : "",
         html: parsed.html || null,
         text: parsed.text || "",
-      }});
+      };
+      // Firestore doc limit is 1MB — cache only bodies that fit comfortably.
+      try {
+        const size = (out.html || "").length + (out.text || "").length;
+        if (size < 850_000) await admin.firestore().collection("mailBodies").doc(String(uid)).set(out);
+      } catch {}
+      return res.json({ ok: true, data: out });
     } catch (e) {
       try { client && client.close(); } catch {}
       return res.status(500).json({ ok: false, error: e.message || "Inbox error" });
