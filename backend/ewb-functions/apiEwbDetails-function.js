@@ -869,6 +869,17 @@ const SHIPZY_WA_TEMPLATES = (handle) => [
     ],
   },
   {
+    name: "shipzy_vendor_pickup",
+    language: "en",
+    category: "UTILITY",
+    components: [
+      { type: "BODY",
+        text: "New pickup assignment from Shipzy Logistics.\nLR: {{1}}\nPickup: {{2}}\nDrop: {{3}}\nVehicle: {{4}}\nPickup date: {{5}}\n\nReply to this message to confirm vehicle placement.",
+        example: { body_text: [["LR-2026-0001", "Tejas Networks, Jigani, Bangalore", "ACT Warehouse, Hosur", "22 ft Open Body", "13/09/2026"]] } },
+      { type: "FOOTER", text: "Shipzy Logistics" },
+    ],
+  },
+  {
     name: "shipzy_shipment_update",
     language: "en",
     category: "UTILITY",
@@ -1062,11 +1073,15 @@ exports.apiShareLr = functions
             let via = "direct";
             if (!r.ok && [131047, 131026].includes(r.code)) {
               via = "template";
-              r = await waSendTemplate(phoneId, token, num, mediaId ? "shipzy_lr_document" : "shipzy_shipment_update", {
-                mediaId, filename: pdfName,
-                bodyParams: mediaId
+              const fbName = b.tplName || (mediaId ? "shipzy_lr_document" : "shipzy_shipment_update");
+              const fbParams = Array.isArray(b.tplBodyParams) && b.tplBodyParams.length
+                ? b.tplBodyParams
+                : (mediaId
                   ? [tplParams.name || "Team", tplParams.lr || "—", tplParams.from || "—", tplParams.to || "—", tplParams.vehicle || "—"]
-                  : [tplParams.lr || "—", "LR details shared", tplParams.from || "—", tplParams.to || "—", tplParams.vehicle || "—"],
+                  : [tplParams.lr || "—", "LR details shared", tplParams.from || "—", tplParams.to || "—", tplParams.vehicle || "—"]);
+              r = await waSendTemplate(phoneId, token, num, fbName, {
+                mediaId: b.tplName ? null : mediaId, filename: pdfName,
+                bodyParams: fbParams,
               });
               if (r.ok) out.waErrors.push(`${num}: sent via template (new contact)`);
             }
@@ -1078,6 +1093,7 @@ exports.apiShareLr = functions
               status: r.ok ? "sent" : "failed",
               error: r.ok ? null : String(r.error || "").slice(0, 200),
               via, pdf: !!mediaId,
+              context: String(b.context || "lr-share").slice(0, 30),
             });
           }
         }

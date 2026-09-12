@@ -20,9 +20,19 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-81";
+const BUILD_VERSION = "v2026.05.11-82";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-82",
+    date:    "2026-09-12",
+    title:   "Vendor auto-notify — assign a vendor, WhatsApp goes out itself",
+    highlights: [
+      "The manual 'send pickup details to the vendor' message is now automatic: the moment a shipment is saved with a vendor (new booking with vendor selected, or vendor assigned/changed later in the drawer), the vendor's phone gets a WhatsApp with LR number, vehicle needed, pickup date, and the full PICKUP and DROP blocks — address, contact person with phone, and Google Maps link — ending with 'reply to confirm vehicle placement'.",
+      "Cold vendor numbers are covered too: a new shipzy_vendor_pickup template ships with this build — hit 'Create Shipzy templates' once more in Settings → Integrations so it gets submitted for approval; until then, vendors who've chatted within 24h receive the full message directly.",
+      "Each shipment notifies once per vendor (re-saving doesn't spam; changing the vendor notifies the new one). Every send lands in the Comms Log with context 'vendor-pickup', and a toast confirms: '📱 Vendor Sunrise Roadlines notified on WhatsApp'.",
+    ],
+  },
   {
     version: "v2026.05.11-81",
     date:    "2026-09-12",
@@ -5826,7 +5836,14 @@ export default function App() {
               persistBillingClients={persistBillingClients}
               persistVendors={persistVendors}
               documents={documents} persistDocuments={persistDocuments}
-              onCreated={(s) => { setOpenShipment(s); setRoute("shipments"); showToast(`Booking created • AWB ${s.awb}`); }}
+              onCreated={(s) => {
+                setOpenShipment(s); setRoute("shipments"); showToast(`Booking created • AWB ${s.awb}`);
+                if (s.vendorId) {
+                  const next2 = (cur) => cur.map(x => x.id === s.id ? { ...x, vendorNotified: { vendorId: s.vendorId, at: new Date().toISOString() } } : x);
+                  setShipments(cur => { const n = next2(cur); safeSet(STORAGE_KEYS.shipments, n); return n; });
+                  notifyVendorPickup(s, vendors, warehouses, vehicles, showToast);
+                }
+              }}
               showToast={showToast}
               currentUser={currentUser}
             />
@@ -5960,11 +5977,18 @@ export default function App() {
           onClose={() => setOpenShipment(null)}
           onSave={(updated) => {
             const prev = shipments.find(s => s.id === updated.id);
-            const stamped = prev ? shipmentWithDiff(prev, updated, currentUser) : updated;
+            // Vendor newly assigned (or changed) on save → auto-notify on WhatsApp
+            const vendorIsNew = updated.vendorId && updated.vendorId !== (prev?.vendorId || "") &&
+                                updated.vendorId !== (updated.vendorNotified?.vendorId || "");
+            const updated2 = vendorIsNew
+              ? { ...updated, vendorNotified: { vendorId: updated.vendorId, at: new Date().toISOString() } }
+              : updated;
+            const stamped = prev ? shipmentWithDiff(prev, updated2, currentUser) : updated2;
             const next = shipments.map(s => s.id === stamped.id ? stamped : s);
             persistShipments(next);
             setOpenShipment(null);
             showToast("Shipment updated");
+            if (vendorIsNew) notifyVendorPickup(stamped, vendors, warehouses, vehicles, showToast);
           }}
           onDelete={(id, opts) => {
             // v67: shipment deletion is disabled company-wide. userCan()
@@ -21989,6 +22013,58 @@ function _toEwbDate(d) {
 
 /** State name → 2-digit GST state code as number. */
 /* Parse NIC datetime "dd/mm/yyyy hh:mm:ss AM/PM" (or dd/mm/yyyy) → Date|null */
+/* ── Auto WhatsApp to vendor on assignment ───────────────────
+   Fired when a shipment is saved with a (new) vendor: sends the
+   pickup + drop details to the vendor's phone in the background.
+   Cold numbers fall back to the shipzy_vendor_pickup template. ── */
+function notifyVendorPickup(s, vendors, warehouses, vehicles, showToast) {
+  try {
+    const vendor = vendors.find(v => v.id === s.vendorId);
+    if (!vendor) return;
+    const phone = String(vendor.phone || "").replace(/\D/g, "");
+    if (phone.length < 10) { showToast && showToast(`Vendor ${vendor.name} has no valid phone — WhatsApp not sent`, "warn"); return; }
+    const pickup   = warehouses.find(w => w.id === s.pickupWarehouseId);
+    const delivery = warehouses.find(w => w.id === s.deliveryWarehouseId);
+    const veh      = vehicles.find(v => v.id === s.vehicleTypeId);
+    const pickDate = (s.pickupLegs && s.pickupLegs[0]?.pickupDate) || s.lrDate || todayISO();
+
+    const stop = (w, tag) => w ? _stopBlock(w, tag) : `*${tag}:* —`;
+    const waText =
+      `🚚 *New Pickup Assignment — Shipzy Logistics*\n\n` +
+      `*LR:* ${s.lrNumber || s.awb || "—"}\n` +
+      `*Vehicle needed:* ${veh?.name || "—"}\n` +
+      `*Pickup date:* ${fmtDate(pickDate)}\n\n` +
+      stop(pickup, "PICKUP") + `\n\n` + stop(delivery, "DROP") + `\n\n` +
+      `Please reply to confirm vehicle placement.`;
+
+    callFtlApi("/apiShareLr", { method: "POST", body: {
+      waNumbers: [phone],
+      waText,
+      context: "vendor-pickup",
+      tplName: "shipzy_vendor_pickup",
+      tplBodyParams: [
+        s.lrNumber || s.awb || "—",
+        [pickup?.name, pickup?.city].filter(Boolean).join(", ") || "—",
+        [delivery?.name, delivery?.city].filter(Boolean).join(", ") || "—",
+        veh?.name || "—",
+        fmtDate(pickDate),
+      ],
+      tpl: { lr: s.lrNumber || s.awb || "" },
+      to: [], cc: [],
+    }}).then(res => {
+      const d = (res && res.data) || {};
+      if ((d.waSent || 0) > 0) {
+        const viaTpl = (d.waErrors || []).some(e => /via template/.test(e));
+        showToast && showToast(`📱 Vendor ${vendor.name} notified on WhatsApp${viaTpl ? " (template)" : ""}`);
+      } else {
+        showToast && showToast(`📱 Vendor WhatsApp failed${d.waErrors?.length ? `: ${d.waErrors[0].slice(0, 60)}` : ""}`, "warn");
+      }
+    }).catch(e => {
+      showToast && showToast(`📱 Vendor WhatsApp failed: ${(e.message || "error").slice(0, 60)}`, "warn");
+    });
+  } catch {}
+}
+
 function parseNicDateTime(v) {
   const s = String(v || "").trim();
   const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
