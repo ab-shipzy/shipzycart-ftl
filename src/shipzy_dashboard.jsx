@@ -20,9 +20,19 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-85";
+const BUILD_VERSION = "v2026.05.11-86";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-86",
+    date:    "2026-09-12",
+    title:   "Browser-level cache — comms tabs render with ZERO loading",
+    highlights: [
+      "Mail Inbox, WA Templates and Comms Log now keep a copy in the browser itself (memory + localStorage). Re-opening any of these tabs paints the last-known data INSTANTLY — no spinner, no 'Loading…', not even the 300ms database round-trip — and then silently revalidates against Firestore, updating in place if anything changed.",
+      "Opened email bodies are held in memory too: re-opening a mail you've already read is immediate. Background syncs are throttled sensibly — Gmail is checked only if the last sync is older than 5 minutes, Meta templates only if older than 6 hours; the Refresh button always forces a live sync.",
+      "The cache survives page reloads (localStorage), so even a fresh login shows yesterday's inbox instantly while today's mails stream in behind it.",
+    ],
+  },
   {
     version: "v2026.05.11-85",
     date:    "2026-09-12",
@@ -20159,6 +20169,34 @@ function _monthSpanLabel(from, to) {
    the UI reads the database DIRECTLY (100-300ms) instead of waking a
    Cloud Function (cold start 3-8s). Functions remain the only writers
    and handle background syncs. ── */
+/* ── Client-side UI cache for comms tabs ─────────────────────
+   Memory + localStorage copy of the inbox list, templates, comms log
+   and opened email bodies. Tabs render INSTANTLY from this (no
+   loading state at all after first ever view), then silently
+   revalidate against Firestore and update in place. ── */
+const _ftlUi = { inboxList: null, inboxSyncedAt: null, tplList: null, tplSyncedAt: null, comms: null, bodies: {} };
+(function _ftlUiHydrate() {
+  try {
+    const j = JSON.parse(localStorage.getItem("shipzy:ftlUiCache:v1") || "null");
+    if (j) {
+      _ftlUi.inboxList = j.inboxList || null;
+      _ftlUi.inboxSyncedAt = j.inboxSyncedAt || null;
+      _ftlUi.tplList = j.tplList || null;
+      _ftlUi.tplSyncedAt = j.tplSyncedAt || null;
+      _ftlUi.comms = j.comms || null;
+    }
+  } catch {}
+})();
+function _ftlUiSave() {
+  try {
+    localStorage.setItem("shipzy:ftlUiCache:v1", JSON.stringify({
+      inboxList: _ftlUi.inboxList, inboxSyncedAt: _ftlUi.inboxSyncedAt,
+      tplList: _ftlUi.tplList, tplSyncedAt: _ftlUi.tplSyncedAt,
+      comms: (_ftlUi.comms || []).slice(0, 100),
+    }));
+  } catch {}
+}
+
 function _ftlDb() {
   try {
     const cfg = loadCloudConfig();
@@ -20176,14 +20214,15 @@ const FTL_TEMPLATE_USAGE = {
   shipzy_vendor_pickup:   "Vendor auto-notify → vendor assigned on a shipment but hasn't chatted in 24h",
 };
 function WaTemplatesTab({ currentUser, showToast }) {
-  const [list, setList] = useState(null);
+  const [list, setList] = useState(() => _ftlUi.tplList);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [note, setNote] = useState(null);
   const [showAll, setShowAll] = useState(false);
   const isSuper = currentUser?.role === "super-admin";
 
-  const [syncedAt, setSyncedAt] = useState(null);
+  const [syncedAt, setSyncedAt] = useState(() => _ftlUi.tplSyncedAt);
+  const _remember = (tpls, at) => { _ftlUi.tplList = tpls; if (at) _ftlUi.tplSyncedAt = at; _ftlUiSave(); };
   const load = async (force) => {
     if (force) setBusy(true);
     setErr(null);
@@ -20197,7 +20236,8 @@ function WaTemplatesTab({ currentUser, showToast }) {
               const d = doc.data();
               setList(d.templates || []);
               setSyncedAt(d.lastSyncAt || null);
-              return { fromCache: true };
+              _remember(d.templates || [], d.lastSyncAt || null);
+              return { fromCache: true, lastSyncAt: d.lastSyncAt || null };
             }
           } catch {}
         }
@@ -20206,6 +20246,7 @@ function WaTemplatesTab({ currentUser, showToast }) {
       const d = (res && res.data) || {};
       setList(d.templates || []);
       if (d.lastSyncAt) setSyncedAt(d.lastSyncAt);
+      _remember(d.templates || [], d.lastSyncAt || null);
       return d;
     } catch (e) { setErr(e.message || "Could not load templates"); if (force || list === null) setList([]); }
     finally { if (force) setBusy(false); }
@@ -20213,7 +20254,9 @@ function WaTemplatesTab({ currentUser, showToast }) {
   useEffect(() => {
     (async () => {
       const first = await load(false);
-      if (first && first.fromCache) load(true).catch(() => {});
+      const lastAt = (first && first.lastSyncAt) || _ftlUi.tplSyncedAt || 0;
+      // Template statuses change rarely — auto-hit Meta only if stale > 6h.
+      if (Date.now() - Number(lastAt || 0) > 6 * 3600_000) load(true).catch(() => {});
     })();
   }, []);
 
@@ -20323,7 +20366,7 @@ function WaTemplatesTab({ currentUser, showToast }) {
    Firestore — this tab reads it: recipient, LR, sent/failed, why,
    direct vs template, PDF or not. ── */
 function CommsLog() {
-  const [entries, setEntries] = useState(null);
+  const [entries, setEntries] = useState(() => _ftlUi.comms);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [filter, setFilter] = useState("all"); // all | email | wa | failed
@@ -20335,7 +20378,9 @@ function CommsLog() {
       if (db) {
         try {
           const snap = await db.collection("commsLog").orderBy("ts", "desc").limit(200).get();
-          setEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          setEntries(rows);
+          _ftlUi.comms = rows; _ftlUiSave();
           setBusy(false);
           return;
         } catch {}
@@ -20443,7 +20488,7 @@ function CommsLog() {
    full email can be printed (with the LR number stamped) as
    billing supporting evidence. ── */
 function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
-  const [list, setList] = useState(null);   // [{uid, from, subject, date, seen}]
+  const [list, setList] = useState(() => _ftlUi.inboxList);   // [{uid, from, subject, date, seen}]
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [openUid, setOpenUid] = useState(null);
@@ -20457,7 +20502,12 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
     return m;
   }, [shipments]);
 
-  const [syncedAt, setSyncedAt] = useState(null);
+  const [syncedAt, setSyncedAt] = useState(() => _ftlUi.inboxSyncedAt);
+  const _remember = (msgs, at) => {
+    _ftlUi.inboxList = msgs;
+    if (at) _ftlUi.inboxSyncedAt = at;
+    _ftlUiSave();
+  };
   const load = async (force) => {
     if (force) setLoading(true);
     setErr(null);
@@ -20472,11 +20522,13 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
               const msgs = snap.docs.map(x => x.data()).filter(m => m.uid)
                 .map(m => ({ uid: m.uid, from: m.from, subject: m.subject, date: m.date, seen: m.seen }));
               setList(msgs);
+              let at = null;
               try {
                 const meta = await db.collection("mailCache").doc("_meta").get();
-                if (meta.exists) setSyncedAt(meta.data().lastSyncAt || null);
+                if (meta.exists) { at = meta.data().lastSyncAt || null; setSyncedAt(at); }
               } catch {}
-              return { fromCache: true };
+              _remember(msgs, at);
+              return { fromCache: true, lastSyncAt: at };
             }
           } catch {}
         }
@@ -20485,6 +20537,7 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
       const d = (res && res.data) || {};
       setList(d.messages || []);
       if (d.lastSyncAt) setSyncedAt(d.lastSyncAt);
+      _remember(d.messages || [], d.lastSyncAt || null);
       return d;
     } catch (e) {
       setErr(e.message || "Could not load inbox");
@@ -20493,27 +20546,32 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
   };
   const refresh = () => load(true);
   useEffect(() => {
-    // Instant: serve the Firestore cache. Then silently sync the mailbox
-    // in the background and update the list if anything new arrived.
+    // Already rendered from the client cache (zero loading). Silently
+    // revalidate from Firestore, and hit Gmail in the background only
+    // if the last real sync is older than 5 minutes.
     (async () => {
       const first = await load(false);
-      if (first && first.fromCache) load(true).catch(() => {});
-      else if (first && !first.fromCache) { /* first ever load already synced */ }
+      const lastAt = (first && first.lastSyncAt) || _ftlUi.inboxSyncedAt || 0;
+      if (Date.now() - Number(lastAt || 0) > 5 * 60_000) load(true).catch(() => {});
     })();
   }, []);
 
   const openMsg = async (uid) => {
-    setOpenUid(uid); setMsg(null); setMsgLoading(true);
+    setOpenUid(uid);
+    if (_ftlUi.bodies[uid]) { setMsg(_ftlUi.bodies[uid]); setMsgLoading(false); return; }
+    setMsg(null); setMsgLoading(true);
     try {
       const db = _ftlDb();
       if (db) {
         try {
           const doc = await db.collection("mailBodies").doc(String(uid)).get();
-          if (doc.exists) { setMsg(doc.data()); setMsgLoading(false); return; }
+          if (doc.exists) { _ftlUi.bodies[uid] = doc.data(); setMsg(_ftlUi.bodies[uid]); setMsgLoading(false); return; }
         } catch {}
       }
       const res = await callFtlApi("/apiInboxGet", { query: { uid } });
-      setMsg((res && res.data) || null);
+      const body = (res && res.data) || null;
+      if (body && !body.error) _ftlUi.bodies[uid] = body;
+      setMsg(body);
     } catch (e) { setMsg({ error: e.message }); }
     finally { setMsgLoading(false); }
   };
