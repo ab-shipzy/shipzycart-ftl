@@ -20,9 +20,19 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-77";
+const BUILD_VERSION = "v2026.05.11-78";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-78",
+    date:    "2026-09-12",
+    title:   "WhatsApp templates — cold numbers now get the LR too",
+    highlights: [
+      "Settings → Integrations → WhatsApp now has a Templates section: one click on 'Create Shipzy templates' submits two utility templates to Meta for approval — shipzy_lr_document (LR PDF attached + shipment details) and shipzy_shipment_update (text update). 'Check status' shows APPROVED / PENDING / REJECTED live. Approval usually lands within minutes to a few hours.",
+      "Share LR just got smarter: when a WhatsApp number hasn't messaged us in 24 hours (Meta's rule), the send no longer fails — it automatically falls back to the approved template, LR PDF included as the document header. The result line notes 'sent via template (new contact)'. No manual choice needed, ever.",
+      "Under the hood: the app discovers your WhatsApp Business Account and app id from the saved token itself — nothing new to configure.",
+    ],
+  },
   {
     version: "v2026.05.11-77",
     date:    "2026-09-12",
@@ -14591,6 +14601,13 @@ function ShareLrModal({ s, warehouses, vehicles, vendors, billingClients, onClos
         cc: sendEmail ? cc : [],
         waNumbers: sendWa ? wa : [],
         waText,
+        tpl: {
+          name: "Team",
+          lr: s.lrNumber || s.awb || "—",
+          from: pickup?.city || pickup?.name || "—",
+          to: delivery?.city || delivery?.name || "—",
+          vehicle: [veh?.name, s.vehicleNumber].filter(Boolean).join(" ") || "—",
+        },
       };
       const res = await callFtlApi("/apiShareLr", { method: "POST", body: payload });
       const d = (res && res.data) || {};
@@ -20270,6 +20287,27 @@ function IntegrationsPanel({ showToast, currentUser }) {
     finally { setBusy(false); }
   };
 
+  const [tplList, setTplList] = useState(null);
+  const [tplNote, setTplNote] = useState(null);
+  const tplRefresh = async () => {
+    setBusy(true); setTplNote(null);
+    try {
+      const res = await callFtlApi("/apiWaTemplates", {});
+      setTplList((res && res.data && res.data.templates || []).filter(t => t.name.startsWith("shipzy_")));
+    } catch (e) { setTplNote(e.message || "Could not load templates"); }
+    finally { setBusy(false); }
+  };
+  const tplCreate = async () => {
+    setBusy(true); setTplNote(null);
+    try {
+      const res = await callFtlApi("/apiWaTemplates", { method: "POST", body: { action: "create-defaults" } });
+      const rs = (res && res.data && res.data.results) || [];
+      setTplNote(rs.map(r => `${r.name}: ${r.note}`).join(" · ") + " — Meta review usually takes a few minutes to a few hours.");
+      await tplRefresh();
+    } catch (e) { setTplNote(e.message || "Create failed"); }
+    finally { setBusy(false); }
+  };
+
   const M = ({ k }) => masked[k] ? <span className="text-[9.5px] text-emerald-600 font-mono ml-1">saved: {masked[k]}</span> : <span className="text-[9.5px] text-slate-300 ml-1">not set</span>;
 
   return (
@@ -20296,6 +20334,30 @@ function IntegrationsPanel({ showToast, currentUser }) {
           <Field label={<span>Access Token <M k="waToken" /></span>}><input type="password" value={form.waToken} onChange={e=>set("waToken",e.target.value)} className={inputCls + " font-mono"} /></Field>
         </div>
         <button onClick={() => test("wa")} disabled={busy} className="text-[11px] font-bold text-[#25D366] disabled:opacity-50">Send test WhatsApp →</button>
+
+        <div className="pt-2 mt-2 border-t border-slate-100">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">Message templates (for new numbers)</div>
+          <div className="text-[10.5px] text-slate-400 mb-2">WhatsApp only allows messages to numbers that wrote to us in the last 24 hours — unless an approved template is used. Create Shipzy's templates once; sharing then automatically uses them for new contacts (LR PDF included).</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button onClick={tplCreate} disabled={busy}
+              className="px-3 py-1.5 rounded bg-[#25D366] hover:bg-[#1faa52] text-white text-[10.5px] font-bold disabled:opacity-50">Create Shipzy templates</button>
+            <button onClick={tplRefresh} disabled={busy}
+              className="px-3 py-1.5 rounded border border-slate-200 text-[10.5px] font-bold text-slate-600 disabled:opacity-50">Check status</button>
+          </div>
+          {tplList && (
+            <div className="mt-2 space-y-1">
+              {tplList.length === 0 && <div className="text-[10.5px] text-slate-400 italic">No templates yet.</div>}
+              {tplList.map(t => (
+                <div key={t.name + t.language} className="flex items-center gap-2 text-[10.5px]">
+                  <span className="font-mono text-[#00304a]">{t.name}</span>
+                  <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${t.status === "APPROVED" ? "bg-emerald-100 text-emerald-700" : t.status === "REJECTED" ? "bg-rose-100 text-rose-600" : "bg-amber-100 text-amber-700"}`}>{t.status}</span>
+                  <span className="text-slate-400">{t.category?.toLowerCase()}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {tplNote && <div className="mt-1.5 text-[10.5px] text-slate-500">{tplNote}</div>}
+        </div>
       </div>
 
       <div className="bg-white rounded-md border border-slate-200 p-4 space-y-2.5">

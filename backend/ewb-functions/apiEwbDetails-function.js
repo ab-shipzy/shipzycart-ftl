@@ -735,9 +735,9 @@ function waSendText(phoneId, token, toNumber, body) {
       res.on("end", () => {
         if (res.statusCode >= 200 && res.statusCode < 300) resolve({ ok: true });
         else {
-          let msg = raw.slice(0, 200);
-          try { msg = JSON.parse(raw).error?.message || msg; } catch {}
-          resolve({ ok: false, error: msg });
+          let msg = raw.slice(0, 200), code = null;
+          try { const e = JSON.parse(raw).error; msg = e?.message || msg; code = e?.code || null; } catch {}
+          resolve({ ok: false, code, error: msg });
         }
       });
     });
@@ -804,6 +804,150 @@ async function waSendDocument(phoneId, token, toNumber, mediaId, filename, capti
   return { ok: false, error: (data.error?.message || `HTTP ${res.status}`).slice(0, 160) };
 }
 
+
+/* ── WhatsApp templates: create via Management API + send for cold numbers ── */
+async function waDebugInfo(token) {
+  const res = await fetch(`https://graph.facebook.com/v20.0/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`);
+  const j = await res.json().catch(() => ({}));
+  const d = j.data || {};
+  let wabaId = null;
+  for (const gs of d.granular_scopes || []) {
+    if ((gs.scope === "whatsapp_business_management" || gs.scope === "whatsapp_business_messaging") && gs.target_ids?.length) {
+      wabaId = gs.target_ids[0]; break;
+    }
+  }
+  return { appId: d.app_id || null, wabaId };
+}
+
+/* Minimal valid one-page PDF ("Shipzy Logistics — Sample LR") used only as
+   the sample document Meta requires when reviewing a DOCUMENT-header template. */
+function samplePdfBuffer() {
+  const content = "BT /F1 18 Tf 72 720 Td (Shipzy Logistics - Sample LR Document) Tj ET";
+  const objs = [
+    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
+    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
+    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj",
+    "4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj",
+    `5 0 obj<</Length ${content.length}>>stream\n${content}\nendstream endobj`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const o of objs) { offsets.push(pdf.length); pdf += o + "\n"; }
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i <= objs.length; i++) pdf += String(offsets[i]).padStart(10, "0") + " 00000 n \n";
+  pdf += `trailer<</Size ${objs.length + 1}/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(pdf, "latin1");
+}
+
+async function waUploadSampleHandle(appId, token) {
+  const buf = samplePdfBuffer();
+  const start = await fetch(`https://graph.facebook.com/v20.0/${appId}/uploads?file_name=sample-lr.pdf&file_length=${buf.length}&file_type=application/pdf&access_token=${encodeURIComponent(token)}`, { method: "POST" });
+  const sj = await start.json().catch(() => ({}));
+  if (!sj.id) throw new Error(sj.error?.message || "upload session failed");
+  const up = await fetch(`https://graph.facebook.com/v20.0/${sj.id}`, {
+    method: "POST",
+    headers: { "Authorization": `OAuth ${token}`, "file_offset": "0", "Content-Type": "application/octet-stream" },
+    body: buf,
+  });
+  const uj = await up.json().catch(() => ({}));
+  if (!uj.h) throw new Error(uj.error?.message || "sample upload failed");
+  return uj.h;
+}
+
+const SHIPZY_WA_TEMPLATES = (handle) => [
+  {
+    name: "shipzy_lr_document",
+    language: "en",
+    category: "UTILITY",
+    components: [
+      { type: "HEADER", format: "DOCUMENT", example: { header_handle: [handle] } },
+      { type: "BODY",
+        text: "Dear {{1}},\nPlease find attached LR {{2}} for your shipment from {{3}} to {{4}}.\nVehicle: {{5}}\n\nReply to this message for any assistance.",
+        example: { body_text: [["Team", "LR-2026-0001", "Bangalore", "Delhi", "KA01AB1234"]] } },
+      { type: "FOOTER", text: "Shipzy Logistics" },
+    ],
+  },
+  {
+    name: "shipzy_shipment_update",
+    language: "en",
+    category: "UTILITY",
+    components: [
+      { type: "BODY",
+        text: "Shipment update for LR {{1}}:\n{{2}}\nRoute: {{3}} to {{4}} | Vehicle: {{5}}\n\nReply to this message for any assistance.",
+        example: { body_text: [["LR-2026-0001", "Vehicle placed and loading started", "Bangalore", "Delhi", "KA01AB1234"]] } },
+      { type: "FOOTER", text: "Shipzy Logistics" },
+    ],
+  },
+];
+
+async function waSendTemplate(phoneId, token, toNumber, tplName, { mediaId, filename, bodyParams }) {
+  const components = [];
+  if (mediaId) components.push({ type: "header", parameters: [{ type: "document", document: { id: mediaId, filename: filename || "LR.pdf" } }] });
+  components.push({ type: "body", parameters: (bodyParams || []).map(v => ({ type: "text", text: String(v ?? "—").slice(0, 120) || "—" })) });
+  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messaging_product: "whatsapp", to: toNumber, type: "template",
+      template: { name: tplName, language: { code: "en" }, components },
+    }),
+  });
+  if (res.ok) return { ok: true };
+  const data = await res.json().catch(() => ({}));
+  return { ok: false, code: data.error?.code, error: (data.error?.message || `HTTP ${res.status}`).slice(0, 160) };
+}
+
+exports.apiWaTemplates = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 120, memory: "256MB" })
+  .https.onRequest(async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Headers", "Content-Type, X-Shipzy-API-Key");
+    if (req.method === "OPTIONS") return res.status(204).send("");
+    try {
+      if (!(await verifyApiKey(req))) return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
+      const icfg = await getIntegrations();
+      const token = icfg.waToken || process.env.WA_TOKEN;
+      if (!token) return res.status(500).json({ ok: false, error: "WhatsApp not configured — save the token in Settings → Integrations first" });
+      const info = await waDebugInfo(token);
+      if (!info.wabaId) return res.status(500).json({ ok: false, error: "Could not discover the WhatsApp Business Account from this token — regenerate it with whatsapp_business_management permission" });
+
+      if (req.method === "GET") {
+        const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/message_templates?fields=name,status,category,language&limit=50&access_token=${encodeURIComponent(token)}`);
+        const j = await r.json().catch(() => ({}));
+        if (j.error) return res.status(502).json({ ok: false, error: j.error.message });
+        return res.json({ ok: true, data: { wabaId: info.wabaId, templates: (j.data || []).map(t => ({ name: t.name, status: t.status, category: t.category, language: t.language })) } });
+      }
+
+      const b = req.body || {};
+      if (b.action === "create-defaults") {
+        if (!info.appId) return res.status(500).json({ ok: false, error: "Could not discover the app id from this token" });
+        const handle = await waUploadSampleHandle(info.appId, token);
+        const results = [];
+        for (const tpl of SHIPZY_WA_TEMPLATES(handle)) {
+          const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/message_templates?access_token=${encodeURIComponent(token)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(tpl),
+          });
+          const j = await r.json().catch(() => ({}));
+          if (j.error) {
+            const already = /already exists/i.test(String(j.error.error_user_msg || j.error.message || ""));
+            results.push({ name: tpl.name, ok: already, note: already ? "already exists" : (j.error.error_user_msg || j.error.message || "failed").slice(0, 160) });
+          } else {
+            results.push({ name: tpl.name, ok: true, note: `submitted (${j.status || "PENDING"})` });
+          }
+        }
+        return res.json({ ok: true, data: { results } });
+      }
+
+      return res.status(400).json({ ok: false, error: "Unknown action" });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message || "Internal error" });
+    }
+  });
+
 exports.apiShareLr = functions
   .region("us-central1")
   .runWith({ timeoutSeconds: 300, memory: "1GB" })
@@ -868,13 +1012,27 @@ exports.apiShareLr = functions
             try { mediaId = await waUploadMedia(phoneId, token, pdfBuf, pdfName); }
             catch (e) { out.waErrors.push(`WA media: ${String(e.message || e).slice(0, 120)}`); }
           }
+          const tplParams = b.tpl || {}; // { name, lr, from, to, vehicle }
           for (const num of waNumbers) {
             let r;
             if (mediaId) {
               r = await waSendDocument(phoneId, token, num, mediaId, pdfName, String(b.waText || b.text || ""));
-              if (!r.ok) r = await waSendText(phoneId, token, num, String(b.waText || b.text || ""));
+              if (!r.ok && ![131047, 131026].includes(r.code)) {
+                r = await waSendText(phoneId, token, num, String(b.waText || b.text || ""));
+              }
             } else {
               r = await waSendText(phoneId, token, num, String(b.waText || b.text || ""));
+            }
+            // Outside the 24-hour window → automatically fall back to the
+            // approved template (with the LR PDF as document header).
+            if (!r.ok && [131047, 131026].includes(r.code)) {
+              r = await waSendTemplate(phoneId, token, num, mediaId ? "shipzy_lr_document" : "shipzy_shipment_update", {
+                mediaId, filename: pdfName,
+                bodyParams: mediaId
+                  ? [tplParams.name || "Team", tplParams.lr || "—", tplParams.from || "—", tplParams.to || "—", tplParams.vehicle || "—"]
+                  : [tplParams.lr || "—", "LR details shared", tplParams.from || "—", tplParams.to || "—", tplParams.vehicle || "—"],
+              });
+              if (r.ok) out.waErrors.push(`${num}: sent via template (new contact)`);
             }
             if (r.ok) out.waSent++;
             else out.waErrors.push(`${num}: ${r.error}`.slice(0, 120));
