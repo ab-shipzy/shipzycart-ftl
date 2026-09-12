@@ -22,7 +22,7 @@ async function cfg() {
     gstin:         ic.wbGstin        || process.env.WB_GSTIN,
     username:      ic.wbUsername     || process.env.WB_USERNAME,
     password:      ic.wbPassword     || process.env.WB_PASSWORD,
-    env:           ic.wbEnv          || process.env.WB_ENV || "production",
+    env:           String(ic.wbEnv || process.env.WB_ENV || "production").trim().toLowerCase(),
     ip:            ic.wbIp           || process.env.WB_IP_ADDRESS || "127.0.0.1",
   };
 }
