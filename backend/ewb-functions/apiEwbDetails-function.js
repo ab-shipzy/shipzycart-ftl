@@ -911,7 +911,8 @@ exports.apiWaTemplates = functions
       const token = icfg.waToken || process.env.WA_TOKEN;
       if (!token) return res.status(500).json({ ok: false, error: "WhatsApp not configured — save the token in Settings → Integrations first" });
       const info = await waDebugInfo(token);
-      if (!info.wabaId) return res.status(500).json({ ok: false, error: "Could not discover the WhatsApp Business Account from this token — regenerate it with whatsapp_business_management permission" });
+      if (icfg.waWabaId) info.wabaId = String(icfg.waWabaId).replace(/\D/g, "") || icfg.waWabaId;
+      if (!info.wabaId) return res.status(500).json({ ok: false, error: "WhatsApp Business Account ID not found automatically — paste your WABA ID in Settings → Integrations (WhatsApp section) and save" });
 
       if (req.method === "GET") {
         const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/message_templates?fields=name,status,category,language&limit=50&access_token=${encodeURIComponent(token)}`);
@@ -1082,6 +1083,7 @@ exports.apiIntegrations = functions
           smtpUser: c.smtpUser || "", smtpPass: _mask(c.smtpPass),
           mailFrom: c.mailFrom || "",
           waPhoneId: _mask(c.waPhoneId), waToken: _mask(c.waToken),
+          waWabaId: c.waWabaId || "",
           imapUser: c.imapUser || "", imapPass: _mask(c.imapPass),
           wbEmail: c.wbEmail || "", wbUsername: c.wbUsername || "",
           wbPassword: _mask(c.wbPassword), wbClientId: _mask(c.wbClientId),
@@ -1092,7 +1094,7 @@ exports.apiIntegrations = functions
 
       const b = req.body || {};
       if (b.action === "save") {
-        const allowed = ["smtpHost","smtpPort","smtpUser","smtpPass","mailFrom","waPhoneId","waToken","imapUser","imapPass",
+        const allowed = ["smtpHost","smtpPort","smtpUser","smtpPass","mailFrom","waPhoneId","waToken","waWabaId","imapUser","imapPass",
                          "wbEmail","wbUsername","wbPassword","wbClientId","wbClientSecret","wbGstin","wbEnv","wbIp"];
         const patch = {};
         allowed.forEach(k => {

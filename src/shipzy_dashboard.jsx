@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-78";
+const BUILD_VERSION = "v2026.05.11-79";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-79",
+    date:    "2026-09-12",
+    title:   "WABA ID field for templates",
+    highlights: [
+      "Settings → Integrations → WhatsApp gains a WABA ID field: when Meta's token introspection doesn't reveal the Business Account (full-control system users), paste the ID once and template creation works. Found in Business settings → Accounts → WhatsApp accounts → the ID under the account name.",
+    ],
+  },
   {
     version: "v2026.05.11-78",
     date:    "2026-09-12",
@@ -20243,7 +20251,7 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
    in the shared app state, so ordinary users can't read secrets. ── */
 function IntegrationsPanel({ showToast, currentUser }) {
   const empty = { smtpHost: "", smtpPort: "", smtpUser: "", smtpPass: "", mailFrom: "", waPhoneId: "", waToken: "", imapUser: "", imapPass: "",
-    wbEmail: "", wbUsername: "", wbPassword: "", wbClientId: "", wbClientSecret: "", wbGstin: "", wbEnv: "", wbIp: "" };
+    wbEmail: "", wbUsername: "", wbPassword: "", wbClientId: "", wbClientSecret: "", wbGstin: "", wbEnv: "", wbIp: "", waWabaId: "" };
   const [form, setForm] = useState(empty);
   const [masked, setMasked] = useState({});
   const [busy, setBusy] = useState(false);
@@ -20332,6 +20340,7 @@ function IntegrationsPanel({ showToast, currentUser }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           <Field label={<span>Phone Number ID <M k="waPhoneId" /></span>}><input value={form.waPhoneId} onChange={e=>set("waPhoneId",e.target.value)} className={inputCls + " font-mono"} /></Field>
           <Field label={<span>Access Token <M k="waToken" /></span>}><input type="password" value={form.waToken} onChange={e=>set("waToken",e.target.value)} className={inputCls + " font-mono"} /></Field>
+          <Field label={<span>WABA ID (Business Account ID) <M k="waWabaId" /></span>}><input value={form.waWabaId} onChange={e=>set("waWabaId",e.target.value)} placeholder="Business settings → WhatsApp accounts → ID" className={inputCls + " font-mono"} /></Field>
         </div>
         <button onClick={() => test("wa")} disabled={busy} className="text-[11px] font-bold text-[#25D366] disabled:opacity-50">Send test WhatsApp →</button>
 
