@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-73";
+const BUILD_VERSION = "v2026.05.11-74";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-74",
+    date:    "2026-09-12",
+    title:   "Backend moves home to shipzycart-ftl (Blaze) — with automatic fallback",
+    highlights: [
+      "All ShipzyCart backend calls (e-way bill fetch/create/Part-B/extend, GSTIN verify, LR sharing, Integrations, Mail Inbox) now target the shipzycart-ftl project's own Cloud Functions first — one project for frontend, backend, and database, deployed together from GitHub.",
+      "Zero-downtime migration: if a function isn't live on the new home yet (or a call fails there), the app transparently retries on the previous backend (shipzy-vendor) where the same functions run today. Once the new home is fully deployed, everything just uses it. LTL rate/quote APIs continue on their existing home unchanged.",
+    ],
+  },
   {
     version: "v2026.05.11-73",
     date:    "2026-09-12",
@@ -2531,6 +2540,58 @@ function isLtlConfigured() {
    `opts.method` defaults to GET; `opts.body` is stringified when set;
    `opts.query` becomes URL-encoded query params. Throws on non-2xx or
    missing config; returns the parsed JSON body on success. */
+
+/* ── Backend base for OUR functions (EWB, share, inbox, integrations) ──
+   Primary home: the shipzycart-ftl project itself (post-Blaze). During
+   migration — or if a call ever fails there — we transparently retry on
+   the configured LTL base (shipzy-vendor), where the same functions were
+   historically deployed. Same X-Shipzy-API-Key on both. ── */
+const FTL_API_BASE = "https://us-central1-shipzycart-ftl.cloudfunctions.net";
+
+async function callFtlApi(endpoint, opts = {}) {
+  const cfg = loadLtlConfig();
+  if (!cfg || !cfg.apiKey) throw new Error("API not configured — open Settings → LTL Rates API");
+  const path = endpoint.startsWith("/") ? endpoint : "/" + endpoint;
+  const doFetch = async (base) => {
+    let url = base.replace(/\/+$/, "") + path;
+    if (opts.query) {
+      const qs = new URLSearchParams();
+      for (const [k, v] of Object.entries(opts.query)) if (v != null && v !== "") qs.append(k, String(v));
+      const qStr = qs.toString();
+      if (qStr) url += (url.includes("?") ? "&" : "?") + qStr;
+    }
+    const res = await fetch(url, {
+      method: opts.method || "GET",
+      headers: {
+        "X-Shipzy-API-Key": cfg.apiKey,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    let data = null;
+    try { data = await res.json(); } catch {}
+    return { res, data };
+  };
+  let out;
+  try {
+    out = await doFetch(FTL_API_BASE);
+    // 404 = function not deployed on the new home yet → fall back
+    if (out.res.status === 404 && cfg.baseUrl) out = await doFetch(cfg.baseUrl);
+  } catch (e) {
+    // network-level failure on the new home → fall back
+    if (cfg.baseUrl) out = await doFetch(cfg.baseUrl);
+    else throw e;
+  }
+  const { res, data } = out;
+  if (!res.ok) {
+    const msg = (data && (data.message || data.error)) || res.statusText || `HTTP ${res.status}`;
+    throw new Error(`${res.status} — ${msg}`);
+  }
+  if (data && data.ok === false) throw new Error(data.message || data.error || "API returned ok=false");
+  return data;
+}
+
 async function callLtlApi(endpoint, opts = {}) {
   const cfg = loadLtlConfig();
   if (!cfg || !cfg.apiKey || !cfg.baseUrl) throw new Error("LTL API not configured — open Settings → LTL Rates API");
@@ -14472,7 +14533,7 @@ function ShareLrModal({ s, warehouses, vehicles, vendors, billingClients, onClos
         waNumbers: sendWa ? wa : [],
         waText,
       };
-      const res = await callLtlApi("/apiShareLr", { method: "POST", body: payload });
+      const res = await callFtlApi("/apiShareLr", { method: "POST", body: payload });
       const d = (res && res.data) || {};
       const bits = [];
       if (sendEmail && to.length) bits.push(d.emailOk ? `✓ Email sent to ${to.length + cc.length} recipient${to.length + cc.length > 1 ? "s" : ""}` : `✗ Email: ${d.emailError || "failed"}`);
@@ -16120,7 +16181,7 @@ function InvoiceTab({ s, set }) {
     }
     setEwbFetch(p => ({ ...p, [inv.id]: { status: "loading" } }));
     try {
-      const res = await callLtlApi("/apiEwbDetails", { query: { ewbNo } });
+      const res = await callFtlApi("/apiEwbDetails", { query: { ewbNo } });
       const d = (res && res.data) || {};
       set("invoices", (s.invoices || []).map(x => x.id === inv.id ? {
         ...x,
@@ -19944,7 +20005,7 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
   const refresh = async () => {
     setLoading(true); setErr(null);
     try {
-      const res = await callLtlApi("/apiInboxList", { query: { limit: 50 } });
+      const res = await callFtlApi("/apiInboxList", { query: { limit: 50 } });
       setList((res && res.data && res.data.messages) || []);
     } catch (e) {
       setErr(e.message || "Could not load inbox");
@@ -19956,7 +20017,7 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
   const openMsg = async (uid) => {
     setOpenUid(uid); setMsg(null); setMsgLoading(true);
     try {
-      const res = await callLtlApi("/apiInboxGet", { query: { uid } });
+      const res = await callFtlApi("/apiInboxGet", { query: { uid } });
       setMsg((res && res.data) || null);
     } catch (e) { setMsg({ error: e.message }); }
     finally { setMsgLoading(false); }
@@ -20103,7 +20164,7 @@ function IntegrationsPanel({ showToast, currentUser }) {
   const load = async () => {
     setBusy(true); setNote(null);
     try {
-      const res = await callLtlApi("/apiIntegrations", {});
+      const res = await callFtlApi("/apiIntegrations", {});
       setMasked((res && res.data) || {});
       setNote({ kind: "ok", msg: "Current configuration loaded (secrets masked). Type a value only in fields you want to change." });
     } catch (e) { setNote({ kind: "err", msg: e.message || "Load failed" }); }
@@ -20117,7 +20178,7 @@ function IntegrationsPanel({ showToast, currentUser }) {
       const payload = {};
       Object.entries(form).forEach(([k, v]) => { if (String(v).trim() !== "") payload[k] = String(v).trim(); });
       if (Object.keys(payload).length === 0) { setNote({ kind: "err", msg: "Nothing to save — fill at least one field." }); setBusy(false); return; }
-      await callLtlApi("/apiIntegrations", { method: "POST", body: { action: "save", config: payload } });
+      await callFtlApi("/apiIntegrations", { method: "POST", body: { action: "save", config: payload } });
       setForm(empty);
       await load();
       showToast && showToast("Integrations saved");
@@ -20130,7 +20191,7 @@ function IntegrationsPanel({ showToast, currentUser }) {
     try {
       const to = which === "email" ? (prompt("Send test email to:", currentUser?.email || "") || "") : (prompt("Send test WhatsApp to (10-digit):", "") || "");
       if (!to.trim()) { setBusy(false); return; }
-      const res = await callLtlApi("/apiIntegrations", { method: "POST", body: { action: which === "email" ? "test-email" : "test-wa", to: to.trim() } });
+      const res = await callFtlApi("/apiIntegrations", { method: "POST", body: { action: which === "email" ? "test-email" : "test-wa", to: to.trim() } });
       const d = (res && res.data) || {};
       setNote(d.ok ? { kind: "ok", msg: `Test ${which} sent to ${to} — check the ${which === "email" ? "inbox" : "phone"}.` } : { kind: "err", msg: d.error || "Test failed" });
     } catch (e) { setNote({ kind: "err", msg: e.message || "Test failed" }); }
@@ -24351,7 +24412,7 @@ function EwbActions({ shipments, warehouses, billingClients, persistShipments, s
   const callAction = async (action, payload, onOk) => {
     setBusy(true); setResult(null);
     try {
-      const res = await callLtlApi("/apiEwbActions", { method: "POST", body: { action, payload } });
+      const res = await callFtlApi("/apiEwbActions", { method: "POST", body: { action, payload } });
       const d = (res && res.data) || {};
       onOk && onOk(d);
       const bits = [];
@@ -24395,7 +24456,7 @@ function EwbActions({ shipments, warehouses, billingClients, persistShipments, s
     }
     setGstinChk(p => ({ ...p, [side]: { status: "loading" } }));
     try {
-      const res = await callLtlApi("/apiGstinDetails", { query: { gstin: g } });
+      const res = await callFtlApi("/apiGstinDetails", { query: { gstin: g } });
       const d = (res && res.data) || {};
       const name = d.tradeName || d.legalName || "";
       const addr = [d.address1, d.address2].filter(Boolean).join(", ");
@@ -24742,7 +24803,7 @@ function GstinVerifyCard() {
     if (!/^[0-9]{2}[A-Z0-9]{13}$/.test(g)) { setErr("Enter a valid 15-character GSTIN."); setData(null); return; }
     setBusy(true); setErr(null); setData(null);
     try {
-      const res = await callLtlApi("/apiGstinDetails", { query: { gstin: g } });
+      const res = await callFtlApi("/apiGstinDetails", { query: { gstin: g } });
       setData((res && res.data) || null);
     } catch (e) { setErr(e.message || "Lookup failed"); }
     finally { setBusy(false); }
@@ -24801,7 +24862,7 @@ function EwbPdfDownload() {
     if (no.length !== 12) { setErr("Enter a valid 12-digit e-way bill number."); return; }
     setBusy(true); setErr(null);
     try {
-      const res = await callLtlApi("/apiEwbDetails", { query: { ewbNo: no } });
+      const res = await callFtlApi("/apiEwbDetails", { query: { ewbNo: no } });
       const d = (res && res.data) || {};
       const r = d.raw || {};
       const esc = (v) => escapeHtml(String(v ?? "—"));
