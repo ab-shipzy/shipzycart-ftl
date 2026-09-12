@@ -20,9 +20,20 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-71";
+const BUILD_VERSION = "v2026.05.11-72";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-72",
+    date:    "2026-09-12",
+    title:   "Integrations in Settings (super-admin) + Mail Inbox with LR evidence linking",
+    highlights: [
+      "Settings → Integrations (super-admin only): configure email SMTP, WhatsApp Cloud API, and the inbox mailbox from the app itself — no more .env editing. Credentials are stored on the BACKEND's own Firestore (never in shared app state, so regular users can't read secrets), shown masked, updated field-by-field, with Send-test-email and Send-test-WhatsApp buttons right there.",
+      "New Mail Inbox tab: your ops mailbox (e.g. ftl-ops@shipzy.in) inside the app. Refresh pulls the latest 50 emails via IMAP; click to read (HTML rendered safely). One Google Workspace app password covers both sending and the inbox.",
+      "Link to LR: on any open email, tap Link to LR, type the LR/AWB, done — the link saves on the shipment, a green LINKED badge appears in the inbox list, and the shipment's Booking tab shows all its linked emails (with unlink). Print/PDF renders the email with a Shipzy evidence header including the LR number — exactly the supporting document billing asks for.",
+      "LR sharing now reads its email/WhatsApp credentials from the same Integrations config automatically.",
+    ],
+  },
   {
     version: "v2026.05.11-71",
     date:    "2026-09-12",
@@ -5716,6 +5727,9 @@ export default function App() {
               showToast={showToast}
             />
           )}
+          {route === "mail-inbox" && (
+            <MailInbox shipments={shipments} persistShipments={persistShipments} showToast={showToast} currentUser={currentUser} />
+          )}
           {route === "freight-calc" && (
             <FreightCalculator shipments={activeShipments} warehouses={warehouses} vehicles={vehicles} vendors={vendors} showToast={showToast} />
           )}
@@ -6909,6 +6923,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, desktopCollapsed, onTog
     { k:"deleted-shipments", label:"Deleted Shipments", icon:Trash2, requires:"view-deleted" },
     { k:"vendor-payments",  label:"Vendor Payments",  icon:IndianRupee, requires:"view-vendor-payments" },
     { k:"freight-calc",     label:"Freight Calculator", icon:Calculator },
+    { k:"mail-inbox",       label:"Mail Inbox",       icon:Inbox },
     { k:"ltl-rates",        label:"LTL Rates",        icon:PackageCheck },
     { k:"ewb-prep",         label:"E-Way Bill Prep",  icon:FileSpreadsheet },
     { k:"documents",        label:"Documents",        icon:FileText },
@@ -15644,6 +15659,25 @@ function BookingTab({ s, set, setNested, warehouses, billingClients, persistBill
         )}
       </Section>
 
+      {/* Linked approval emails (from the Mail Inbox tab) */}
+      {(s.linkedEmails || []).length > 0 && (
+        <Section title={`Linked Emails (${s.linkedEmails.length})`} icon={Mail}>
+          <div className="space-y-1.5">
+            {s.linkedEmails.map(em => (
+              <div key={em.uid} className="flex items-center justify-between gap-2 text-[11px] border border-slate-100 rounded px-2.5 py-1.5">
+                <div className="min-w-0">
+                  <div className="font-semibold text-[#00304a] truncate">{em.subject || "(no subject)"}</div>
+                  <div className="text-slate-500 truncate">{em.from} · {fmtDate(em.date)}</div>
+                </div>
+                <button onClick={() => set("linkedEmails", (s.linkedEmails || []).filter(x => x.uid !== em.uid))}
+                  className="shrink-0 text-[10px] text-rose-500 font-semibold">Unlink</button>
+              </div>
+            ))}
+            <div className="text-[10px] text-slate-400">Open the full email (and print it as evidence) from the Mail Inbox tab. Save the shipment after unlinking.</div>
+          </div>
+        </Section>
+      )}
+
       {previewDoc && <DocumentPreview doc={previewDoc} onClose={() => setPreviewDoc(null)} />}
     {quickAddPoc && (
         <QuickAddDrawer kind="poc" prefillName={quickAddPoc.prefillName}
@@ -19876,6 +19910,271 @@ function _monthSpanLabel(from, to) {
 }
 
 
+
+/* ── Mail Inbox: the ftl-ops@ mailbox inside the app ─────────
+   Lists emails from the configured IMAP inbox (Settings →
+   Integrations). Any email can be linked to an LR — the link is
+   saved on the shipment and shows in its Booking tab, and the
+   full email can be printed (with the LR number stamped) as
+   billing supporting evidence. ── */
+function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
+  const [list, setList] = useState(null);   // [{uid, from, subject, date, seen}]
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [openUid, setOpenUid] = useState(null);
+  const [msg, setMsg] = useState(null);     // full message
+  const [msgLoading, setMsgLoading] = useState(false);
+  const [linkFor, setLinkFor] = useState(null); // uid being linked
+
+  const uidLinks = useMemo(() => {
+    const m = new Map();
+    (shipments || []).forEach(s => (s.linkedEmails || []).forEach(em => m.set(String(em.uid), s)));
+    return m;
+  }, [shipments]);
+
+  const refresh = async () => {
+    setLoading(true); setErr(null);
+    try {
+      const res = await callLtlApi("/apiInboxList", { query: { limit: 50 } });
+      setList((res && res.data && res.data.messages) || []);
+    } catch (e) {
+      setErr(e.message || "Could not load inbox");
+      setList([]);
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { refresh(); }, []);
+
+  const openMsg = async (uid) => {
+    setOpenUid(uid); setMsg(null); setMsgLoading(true);
+    try {
+      const res = await callLtlApi("/apiInboxGet", { query: { uid } });
+      setMsg((res && res.data) || null);
+    } catch (e) { setMsg({ error: e.message }); }
+    finally { setMsgLoading(false); }
+  };
+
+  const linkToShipment = (uid, meta, shipId) => {
+    const next = shipments.map(s => {
+      if (s.id !== shipId) return s;
+      const existing = s.linkedEmails || [];
+      if (existing.some(x => String(x.uid) === String(uid))) return s;
+      return { ...s, linkedEmails: [...existing, {
+        uid: String(uid), subject: meta.subject || "", from: meta.from || "",
+        date: meta.date || "", linkedAt: new Date().toISOString(),
+        linkedBy: currentUser?.name || "",
+      }] };
+    });
+    persistShipments(next);
+    setLinkFor(null);
+    const sh = next.find(x => x.id === shipId);
+    showToast && showToast(`Email linked to ${sh?.lrNumber || sh?.awb}`);
+  };
+
+  const searchShipments = (q) => {
+    const needle = q.trim().toLowerCase();
+    return (shipments || [])
+      .filter(s => !s.deletedAt && !isParentLeg(s))
+      .filter(s => [s.lrNumber, s.awb].some(v => v && String(v).toLowerCase().includes(needle)))
+      .slice(0, 7)
+      .map(s => ({ id: s.id, title: s.lrNumber || s.awb, sub: `AWB ${s.awb || "—"} · ${s.status}` }));
+  };
+
+  const printEmail = () => {
+    if (!msg) return;
+    const linked = uidLinks.get(String(openUid));
+    const w = window.open("", "_blank");
+    if (!w) { alert("Allow pop-ups to print the email."); return; }
+    const head = `
+      <div style="border-bottom:2px solid #00304a; padding-bottom:8px; margin-bottom:12px; font-family:Arial">
+        <div style="font-size:16px; font-weight:bold; color:#00304a">Shipzy Logistics — Email Evidence${linked ? ` · LR ${escapeHtml(linked.lrNumber || linked.awb)}` : ""}</div>
+        <div style="font-size:11px; color:#555; margin-top:4px">
+          <b>Subject:</b> ${escapeHtml(msg.subject || "")}<br>
+          <b>From:</b> ${escapeHtml(msg.from || "")}<br>
+          <b>To:</b> ${escapeHtml(msg.to || "")}${msg.cc ? `<br><b>CC:</b> ${escapeHtml(msg.cc)}` : ""}<br>
+          <b>Date:</b> ${escapeHtml(msg.date || "")}
+        </div>
+      </div>`;
+    w.document.open();
+    w.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(msg.subject || "Email")}</title></head><body style="margin:20px">${head}${msg.html || `<pre style="font-family:Arial;white-space:pre-wrap">${escapeHtml(msg.text || "")}</pre>`}<script>setTimeout(() => window.print(), 500);<\/script></body></html>`);
+    w.document.close();
+  };
+
+  return (
+    <div className="p-3 lg:p-5 pb-24">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div>
+          <h2 className="text-[15px] font-bold text-[#00304a] flex items-center gap-2"><Inbox className="w-4 h-4 text-[#0074ff]" /> Mail Inbox</h2>
+          <p className="text-[11.5px] text-slate-500">Approval emails CC'd to your ops mailbox — link each to its LR for billing evidence.</p>
+        </div>
+        <button onClick={refresh} disabled={loading}
+          className="px-3 py-1.5 rounded bg-[#00304a] hover:bg-[#0074ff] text-white text-[11.5px] font-semibold disabled:opacity-50 flex items-center gap-1.5">
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
+        </button>
+      </div>
+
+      {err && <div className="mb-3 text-[11px] rounded px-3 py-2 bg-rose-50 border border-rose-200 text-rose-600">{err} — configure the inbox in Settings → Integrations (super-admin).</div>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,420px)_1fr] gap-4 items-start">
+        {/* List */}
+        <div className="bg-white rounded-md border border-slate-200 divide-y divide-slate-100 max-h-[70vh] overflow-y-auto scrollbar-thin">
+          {list === null && <div className="p-6 text-center text-[12px] text-slate-400">Loading inbox…</div>}
+          {list && list.length === 0 && !err && <div className="p-6 text-center text-[12px] text-slate-400 italic">Inbox is empty.</div>}
+          {(list || []).map(m => {
+            const linked = uidLinks.get(String(m.uid));
+            return (
+              <button key={m.uid} onClick={() => openMsg(m.uid)}
+                className={`w-full text-left px-3 py-2.5 hover:bg-slate-50 transition ${String(openUid) === String(m.uid) ? "bg-[#0074ff]/5" : ""}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`text-[12px] truncate ${m.seen ? "text-slate-600" : "font-bold text-[#00304a]"}`}>{m.from}</span>
+                  <span className="text-[10px] text-slate-400 shrink-0">{fmtDate(m.date)}</span>
+                </div>
+                <div className="text-[11.5px] text-slate-700 truncate mt-0.5">{m.subject || "(no subject)"}</div>
+                {linked && <div className="mt-1 inline-block text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">LINKED · {linked.lrNumber || linked.awb}</div>}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Detail */}
+        <div className="bg-white rounded-md border border-slate-200 min-h-[300px]">
+          {!openUid && <div className="p-10 text-center text-[12px] text-slate-400">Select an email to read it.</div>}
+          {openUid && msgLoading && <div className="p-10 text-center text-[12px] text-slate-400">Opening…</div>}
+          {openUid && msg && !msgLoading && (
+            msg.error ? <div className="p-6 text-[12px] text-rose-500">{msg.error}</div> : (
+              <div className="flex flex-col max-h-[70vh]">
+                <div className="px-4 py-3 border-b border-slate-100">
+                  <div className="text-[13px] font-bold text-[#00304a]">{msg.subject || "(no subject)"}</div>
+                  <div className="text-[10.5px] text-slate-500 mt-0.5">{msg.from} → {msg.to}{msg.cc ? ` · cc ${msg.cc}` : ""} · {fmtDate(msg.date)}</div>
+                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                    {uidLinks.get(String(openUid)) ? (
+                      <span className="text-[10px] font-bold px-2 py-1 rounded bg-emerald-100 text-emerald-700">Linked to {uidLinks.get(String(openUid)).lrNumber || uidLinks.get(String(openUid)).awb}</span>
+                    ) : linkFor === openUid ? (
+                      <div className="w-64">
+                        <SuggestInput selected={null}
+                          onSelect={(r) => linkToShipment(openUid, msg, r.id)}
+                          onClear={() => {}}
+                          search={searchShipments}
+                          placeholder="Type LR / AWB to link…"
+                          emptyHint={'No shipment matches "{q}".'} />
+                      </div>
+                    ) : (
+                      <button onClick={() => setLinkFor(openUid)}
+                        className="px-2.5 py-1 rounded bg-[#0074ff] text-white text-[10.5px] font-bold">Link to LR</button>
+                    )}
+                    <button onClick={printEmail}
+                      className="px-2.5 py-1 rounded border border-slate-300 text-[10.5px] font-bold text-slate-600 hover:border-[#0074ff] hover:text-[#0074ff]">Print / PDF</button>
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  {msg.html
+                    ? <iframe title="email" sandbox="" srcDoc={msg.html} className="w-full min-h-[420px] border-0" />
+                    : <pre className="p-4 text-[12px] whitespace-pre-wrap font-sans text-slate-700">{msg.text || ""}</pre>}
+                </div>
+              </div>
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Integrations (super-admin): email + WhatsApp + inbox creds ──
+   Saved server-side (backend Firestore) via /apiIntegrations — never
+   in the shared app state, so ordinary users can't read secrets. ── */
+function IntegrationsPanel({ showToast, currentUser }) {
+  const empty = { smtpHost: "", smtpPort: "", smtpUser: "", smtpPass: "", mailFrom: "", waPhoneId: "", waToken: "", imapUser: "", imapPass: "" };
+  const [form, setForm] = useState(empty);
+  const [masked, setMasked] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null);
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+
+  const load = async () => {
+    setBusy(true); setNote(null);
+    try {
+      const res = await callLtlApi("/apiIntegrations", {});
+      setMasked((res && res.data) || {});
+      setNote({ kind: "ok", msg: "Current configuration loaded (secrets masked). Type a value only in fields you want to change." });
+    } catch (e) { setNote({ kind: "err", msg: e.message || "Load failed" }); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setBusy(true); setNote(null);
+    try {
+      const payload = {};
+      Object.entries(form).forEach(([k, v]) => { if (String(v).trim() !== "") payload[k] = String(v).trim(); });
+      if (Object.keys(payload).length === 0) { setNote({ kind: "err", msg: "Nothing to save — fill at least one field." }); setBusy(false); return; }
+      await callLtlApi("/apiIntegrations", { method: "POST", body: { action: "save", config: payload } });
+      setForm(empty);
+      await load();
+      showToast && showToast("Integrations saved");
+    } catch (e) { setNote({ kind: "err", msg: e.message || "Save failed" }); }
+    finally { setBusy(false); }
+  };
+
+  const test = async (which) => {
+    setBusy(true); setNote(null);
+    try {
+      const to = which === "email" ? (prompt("Send test email to:", currentUser?.email || "") || "") : (prompt("Send test WhatsApp to (10-digit):", "") || "");
+      if (!to.trim()) { setBusy(false); return; }
+      const res = await callLtlApi("/apiIntegrations", { method: "POST", body: { action: which === "email" ? "test-email" : "test-wa", to: to.trim() } });
+      const d = (res && res.data) || {};
+      setNote(d.ok ? { kind: "ok", msg: `Test ${which} sent to ${to} — check the ${which === "email" ? "inbox" : "phone"}.` } : { kind: "err", msg: d.error || "Test failed" });
+    } catch (e) { setNote({ kind: "err", msg: e.message || "Test failed" }); }
+    finally { setBusy(false); }
+  };
+
+  const M = ({ k }) => masked[k] ? <span className="text-[9.5px] text-emerald-600 font-mono ml-1">saved: {masked[k]}</span> : <span className="text-[9.5px] text-slate-300 ml-1">not set</span>;
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      <div className="text-[12px] text-slate-500">Credentials are stored on the backend (never in shared app data) and used by LR sharing and the Mail Inbox. Leave a field blank to keep its current value.</div>
+      {note && <div className={`text-[11px] rounded px-3 py-2 border ${note.kind === "ok" ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-rose-50 border-rose-200 text-rose-600"}`}>{note.msg}</div>}
+
+      <div className="bg-white rounded-md border border-slate-200 p-4 space-y-2.5">
+        <div className="text-[11px] font-bold text-[#00304a] uppercase tracking-wider">Email sending (Google Workspace SMTP)</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <Field label={<span>Host <M k="smtpHost" /></span>}><input value={form.smtpHost} onChange={e=>set("smtpHost",e.target.value)} placeholder="smtp.gmail.com" className={inputCls} /></Field>
+          <Field label={<span>Port <M k="smtpPort" /></span>}><input value={form.smtpPort} onChange={e=>set("smtpPort",e.target.value)} placeholder="587" className={inputCls} /></Field>
+          <Field label={<span>User (mailbox) <M k="smtpUser" /></span>}><input value={form.smtpUser} onChange={e=>set("smtpUser",e.target.value)} placeholder="ftl-ops@shipzy.in" className={inputCls} /></Field>
+          <Field label={<span>App Password <M k="smtpPass" /></span>}><input type="password" value={form.smtpPass} onChange={e=>set("smtpPass",e.target.value)} placeholder="16-letter app password" className={inputCls + " font-mono"} /></Field>
+          <Field label={<span>From address <M k="mailFrom" /></span>}><input value={form.mailFrom} onChange={e=>set("mailFrom",e.target.value)} placeholder="ftl-ops@shipzy.in" className={inputCls} /></Field>
+        </div>
+        <button onClick={() => test("email")} disabled={busy} className="text-[11px] font-bold text-[#0074ff] disabled:opacity-50">Send test email →</button>
+      </div>
+
+      <div className="bg-white rounded-md border border-slate-200 p-4 space-y-2.5">
+        <div className="text-[11px] font-bold text-[#00304a] uppercase tracking-wider">WhatsApp Business Cloud API</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <Field label={<span>Phone Number ID <M k="waPhoneId" /></span>}><input value={form.waPhoneId} onChange={e=>set("waPhoneId",e.target.value)} className={inputCls + " font-mono"} /></Field>
+          <Field label={<span>Access Token <M k="waToken" /></span>}><input type="password" value={form.waToken} onChange={e=>set("waToken",e.target.value)} className={inputCls + " font-mono"} /></Field>
+        </div>
+        <button onClick={() => test("wa")} disabled={busy} className="text-[11px] font-bold text-[#25D366] disabled:opacity-50">Send test WhatsApp →</button>
+      </div>
+
+      <div className="bg-white rounded-md border border-slate-200 p-4 space-y-2.5">
+        <div className="text-[11px] font-bold text-[#00304a] uppercase tracking-wider">Mail Inbox (IMAP)</div>
+        <div className="text-[10.5px] text-slate-400">If left blank, the SMTP mailbox above is used — one Google Workspace app password covers both sending and the inbox.</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <Field label={<span>IMAP User <M k="imapUser" /></span>}><input value={form.imapUser} onChange={e=>set("imapUser",e.target.value)} placeholder="(defaults to SMTP user)" className={inputCls} /></Field>
+          <Field label={<span>IMAP App Password <M k="imapPass" /></span>}><input type="password" value={form.imapPass} onChange={e=>set("imapPass",e.target.value)} placeholder="(defaults to SMTP password)" className={inputCls + " font-mono"} /></Field>
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={save} disabled={busy}
+          className="px-5 py-2 rounded-lg text-xs font-bold bg-[#0074ff] text-white shadow-lg shadow-[#0074ff]/30 disabled:opacity-50">
+          {busy ? "Working…" : "Save configuration"}
+        </button>
+        <button onClick={load} disabled={busy} className="px-4 py-2 rounded-lg text-xs font-semibold border border-slate-200 text-slate-600">Reload</button>
+      </div>
+    </div>
+  );
+}
+
 function SettingsPage({ warehouses, persistWarehouses, vehicles, persistVehicles, billingClients, persistBillingClients, vendors, persistVendors, subTransporters, persistSubTransporters, users, persistUsers, roles, persistRoles, shipments, persistShipments, documents, persistDocuments, cloudConfig, updateCloudConfig, cloudStatus, showToast, currentUser }) {
   const [active, setActive] = useState("warehouses");
   const [drawer, setDrawer] = useState(null); // { kind, item|null }
@@ -19892,6 +20191,7 @@ function SettingsPage({ warehouses, persistWarehouses, vehicles, persistVehicles
     { k:"backup",         label:"Backup",          icon:Download,  requires:"backup-data" },
     { k:"cloud",          label:"Cloud Sync",      icon:Cloud,     requires:"cloud-sync" },
     { k:"ai",             label:"AI Assistant",    icon:Settings },
+    { k:"integrations",   label:"Integrations",    icon:Send,      requires:"manage-roles" },
     { k:"reset",          label:"Reset Data",      icon:RefreshCw, requires:"reset-data" },
   ];
   const tabs = allTabs.filter(t => !t.requires || userCan(currentUser, t.requires, roles));
@@ -20039,6 +20339,9 @@ function SettingsPage({ warehouses, persistWarehouses, vehicles, persistVehicles
             cloudStatus={cloudStatus} currentUser={currentUser} showToast={showToast}
           />
         )}
+        {active === "integrations" && (currentUser?.role === "super-admin"
+          ? <IntegrationsPanel showToast={showToast} currentUser={currentUser} />
+          : <div className="text-[12px] text-slate-500">Integrations can only be managed by the super-admin.</div>)}
         {active === "ai" && (
           <AIConfigPanel showToast={showToast} />
         )}

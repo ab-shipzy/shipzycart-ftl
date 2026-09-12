@@ -685,15 +685,16 @@ function sendSmtpMail({ to, cc, subject, text, html, attachment }) {
     let nodemailer;
     try { nodemailer = require("nodemailer"); }
     catch { return resolve({ ok: false, error: "nodemailer not installed — run npm install in functions/" }); }
-    const host = process.env.SMTP_HOST, user = process.env.SMTP_USER, pass = process.env.SMTP_PASS;
-    if (!host || !user || !pass) return resolve({ ok: false, error: "SMTP not configured — set SMTP_HOST/SMTP_USER/SMTP_PASS in functions/.env" });
-    const port = Number(process.env.SMTP_PORT || 587);
+    const ic = arguments[0].icfg || {};
+    const host = ic.smtpHost || process.env.SMTP_HOST, user = ic.smtpUser || process.env.SMTP_USER, pass = ic.smtpPass || process.env.SMTP_PASS;
+    if (!host || !user || !pass) return resolve({ ok: false, error: "SMTP not configured — set it in Settings → Integrations" });
+    const port = Number(ic.smtpPort || process.env.SMTP_PORT || 587);
     const transporter = nodemailer.createTransport({
       host, port, secure: port === 465,
       auth: { user, pass },
     });
     transporter.sendMail({
-      from: process.env.MAIL_FROM || user,
+      from: ic.mailFrom || process.env.MAIL_FROM || user,
       to: to.join(", "),
       cc: cc && cc.length ? cc.join(", ") : undefined,
       subject, text, html,
@@ -762,10 +763,12 @@ exports.apiShareLr = functions
         .map(n => n.length === 10 ? "91" + n : n)
         .filter(n => n.length >= 11);
 
+      const icfg = await getIntegrations();
       const out = { emailOk: null, emailError: null, waSent: 0, waErrors: [] };
 
       if (to.length > 0) {
         const mail = await sendSmtpMail({
+          icfg,
           to, cc,
           subject: String(b.subject || "LR — Shipzy Logistics").slice(0, 200),
           text: String(b.text || ""),
@@ -777,9 +780,9 @@ exports.apiShareLr = functions
       }
 
       if (waNumbers.length > 0) {
-        const phoneId = process.env.WA_PHONE_ID, token = process.env.WA_TOKEN;
+        const phoneId = icfg.waPhoneId || process.env.WA_PHONE_ID, token = icfg.waToken || process.env.WA_TOKEN;
         if (!phoneId || !token) {
-          out.waErrors.push("WhatsApp not configured — set WA_PHONE_ID and WA_TOKEN in functions/.env");
+          out.waErrors.push("WhatsApp not configured — set it in Settings → Integrations");
         } else {
           for (const num of waNumbers) {
             const r = await waSendText(phoneId, token, num, String(b.waText || b.text || ""));
@@ -792,5 +795,173 @@ exports.apiShareLr = functions
       return res.json({ ok: true, data: out });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message || "Internal error" });
+    }
+  });
+
+
+/* ── Integrations config: stored in THIS project's Firestore ──
+   (collection "integrations", doc "config") so app users can never
+   read secrets from the shared workspace state. Env vars remain a
+   fallback. Cached per warm instance for 5 minutes. ── */
+let _icfgCache = { at: 0, val: null };
+async function getIntegrations() {
+  const now = Date.now();
+  if (_icfgCache.val && now - _icfgCache.at < 5 * 60_000) return _icfgCache.val;
+  let val = {};
+  try {
+    const snap = await admin.firestore().collection("integrations").doc("config").get();
+    if (snap.exists) val = snap.data() || {};
+  } catch {}
+  _icfgCache = { at: now, val };
+  return val;
+}
+
+const _mask = (v) => v ? ("••••" + String(v).slice(-4)) : "";
+
+exports.apiIntegrations = functions
+  .region("us-central1")
+  .https.onRequest(async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Headers", "Content-Type, X-Shipzy-API-Key");
+    if (req.method === "OPTIONS") return res.status(204).send("");
+    try {
+      if (!(await verifyApiKey(req))) return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
+
+      if (req.method === "GET") {
+        const c = await getIntegrations();
+        return res.json({ ok: true, data: {
+          smtpHost: c.smtpHost || "", smtpPort: c.smtpPort || "",
+          smtpUser: c.smtpUser || "", smtpPass: _mask(c.smtpPass),
+          mailFrom: c.mailFrom || "",
+          waPhoneId: _mask(c.waPhoneId), waToken: _mask(c.waToken),
+          imapUser: c.imapUser || "", imapPass: _mask(c.imapPass),
+        }});
+      }
+
+      const b = req.body || {};
+      if (b.action === "save") {
+        const allowed = ["smtpHost","smtpPort","smtpUser","smtpPass","mailFrom","waPhoneId","waToken","imapUser","imapPass"];
+        const patch = {};
+        allowed.forEach(k => { if (b.config && typeof b.config[k] === "string" && b.config[k].trim() !== "") patch[k] = b.config[k].trim(); });
+        if (!Object.keys(patch).length) return res.status(400).json({ ok: false, error: "No fields to save" });
+        await admin.firestore().collection("integrations").doc("config").set(patch, { merge: true });
+        _icfgCache = { at: 0, val: null };
+        return res.json({ ok: true, data: { saved: Object.keys(patch) } });
+      }
+
+      if (b.action === "test-email") {
+        const icfg = await getIntegrations();
+        const r = await sendSmtpMail({ icfg, to: [String(b.to || "")], cc: [],
+          subject: "ShipzyCart test email ✅", text: "Email sending is configured correctly.",
+          html: "<p>Email sending is configured correctly. — ShipzyCart</p>", attachment: null });
+        return res.json({ ok: true, data: r });
+      }
+
+      if (b.action === "test-wa") {
+        const icfg = await getIntegrations();
+        const phoneId = icfg.waPhoneId || process.env.WA_PHONE_ID, token = icfg.waToken || process.env.WA_TOKEN;
+        if (!phoneId || !token) return res.json({ ok: true, data: { ok: false, error: "WhatsApp not configured yet" } });
+        let num = String(b.to || "").replace(/\D/g, "");
+        if (num.length === 10) num = "91" + num;
+        const r = await waSendText(phoneId, token, num, "ShipzyCart test message ✅ — WhatsApp sending is configured correctly.");
+        return res.json({ ok: true, data: r });
+      }
+
+      return res.status(400).json({ ok: false, error: "Unknown action" });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message || "Internal error" });
+    }
+  });
+
+/* ── Mail inbox (IMAP) — list + read, for the ftl-ops mailbox ── */
+async function imapConnect() {
+  const c = await getIntegrations();
+  const user = c.imapUser || c.smtpUser || process.env.SMTP_USER;
+  const pass = c.imapPass || c.smtpPass || process.env.SMTP_PASS;
+  if (!user || !pass) throw new Error("Inbox not configured — set the mailbox in Settings → Integrations");
+  const { ImapFlow } = require("imapflow");
+  const client = new ImapFlow({
+    host: "imap.gmail.com", port: 993, secure: true,
+    auth: { user, pass },
+    logger: false,
+  });
+  await client.connect();
+  return client;
+}
+
+exports.apiInboxList = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 60, memory: "256MB" })
+  .https.onRequest(async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Headers", "Content-Type, X-Shipzy-API-Key");
+    if (req.method === "OPTIONS") return res.status(204).send("");
+    let client;
+    try {
+      if (!(await verifyApiKey(req))) return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
+      const limit = Math.min(Number(req.query.limit || 50), 100);
+      client = await imapConnect();
+      const lock = await client.getMailboxLock("INBOX");
+      const messages = [];
+      try {
+        const total = client.mailbox.exists;
+        if (total > 0) {
+          const start = Math.max(1, total - limit + 1);
+          for await (const m of client.fetch(`${start}:${total}`, { uid: true, envelope: true, flags: true })) {
+            const env = m.envelope || {};
+            const fromAddr = (env.from && env.from[0]) || {};
+            messages.push({
+              uid: m.uid,
+              from: fromAddr.name ? `${fromAddr.name} <${fromAddr.address}>` : (fromAddr.address || ""),
+              subject: env.subject || "",
+              date: env.date ? new Date(env.date).toISOString() : "",
+              seen: m.flags ? m.flags.has("\\Seen") : false,
+            });
+          }
+        }
+      } finally { lock.release(); }
+      await client.logout();
+      messages.reverse(); // newest first
+      return res.json({ ok: true, data: { messages } });
+    } catch (e) {
+      try { client && client.close(); } catch {}
+      return res.status(500).json({ ok: false, error: e.message || "Inbox error" });
+    }
+  });
+
+exports.apiInboxGet = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 60, memory: "512MB" })
+  .https.onRequest(async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Headers", "Content-Type, X-Shipzy-API-Key");
+    if (req.method === "OPTIONS") return res.status(204).send("");
+    let client;
+    try {
+      if (!(await verifyApiKey(req))) return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
+      const uid = Number(req.query.uid || 0);
+      if (!uid) return res.status(400).json({ ok: false, error: "uid required" });
+      client = await imapConnect();
+      const lock = await client.getMailboxLock("INBOX");
+      let parsed = null;
+      try {
+        const msg = await client.fetchOne(String(uid), { uid: true, source: true }, { uid: true });
+        if (!msg || !msg.source) throw new Error("Message not found");
+        const { simpleParser } = require("mailparser");
+        parsed = await simpleParser(msg.source);
+      } finally { lock.release(); }
+      await client.logout();
+      const addr = (a) => a && a.text ? a.text : "";
+      return res.json({ ok: true, data: {
+        uid,
+        subject: parsed.subject || "",
+        from: addr(parsed.from), to: addr(parsed.to), cc: addr(parsed.cc),
+        date: parsed.date ? new Date(parsed.date).toISOString() : "",
+        html: parsed.html || null,
+        text: parsed.text || "",
+      }});
+    } catch (e) {
+      try { client && client.close(); } catch {}
+      return res.status(500).json({ ok: false, error: e.message || "Inbox error" });
     }
   });
