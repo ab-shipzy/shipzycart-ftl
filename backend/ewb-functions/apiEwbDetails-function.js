@@ -1236,6 +1236,84 @@ async function imapConnect() {
   return client;
 }
 
+
+/* ── Scheduled background syncs: the BACKEND keeps the caches fresh for
+   everyone — no user's browser has to trigger anything. ── */
+async function syncInboxToCache(limit = 50) {
+  let client = await imapConnect();
+  const lock = await client.getMailboxLock("INBOX");
+  const messages = [];
+  try {
+    const total = client.mailbox.exists;
+    if (total > 0) {
+      const start = Math.max(1, total - limit + 1);
+      for await (const m of client.fetch(`${start}:${total}`, { uid: true, envelope: true, flags: true })) {
+        const env = m.envelope || {};
+        const fromAddr = (env.from && env.from[0]) || {};
+        messages.push({
+          uid: m.uid,
+          from: fromAddr.name ? `${fromAddr.name} <${fromAddr.address}>` : (fromAddr.address || ""),
+          subject: env.subject || "",
+          date: env.date ? new Date(env.date).toISOString() : "",
+          seen: m.flags ? m.flags.has("\\Seen") : false,
+        });
+      }
+    }
+  } finally { lock.release(); }
+  await client.logout();
+  messages.reverse();
+  try {
+    const db = admin.firestore();
+    const batch = db.batch();
+    messages.forEach(m => {
+      batch.set(db.collection("mailCache").doc(String(m.uid)), {
+        ...m, dateMs: m.date ? new Date(m.date).getTime() : 0,
+      }, { merge: true });
+    });
+    batch.set(db.collection("mailCache").doc("_meta"), { lastSyncAt: Date.now() }, { merge: true });
+    await batch.commit();
+  } catch {}
+  return messages;
+}
+
+async function syncTemplatesToCache() {
+  const icfg = await getIntegrations();
+  const token = icfg.waToken || process.env.WA_TOKEN;
+  if (!token) return null;
+  const info = await waDebugInfo(token);
+  if (icfg.waWabaId) info.wabaId = String(icfg.waWabaId).replace(/\D/g, "") || icfg.waWabaId;
+  if (!info.wabaId) return null;
+  const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/message_templates?fields=name,status,category,language,components,rejected_reason,quality_score&limit=100&access_token=${encodeURIComponent(token)}`);
+  const j = await r.json().catch(() => ({}));
+  if (j.error) return null;
+  const templates = (j.data || []).map(t => ({
+    name: t.name, status: t.status, category: t.category, language: t.language,
+    rejectedReason: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null,
+    quality: t.quality_score?.score || null,
+    components: (t.components || []).map(c => ({ type: c.type, format: c.format || null, text: c.text || null })),
+  }));
+  try { await admin.firestore().collection("waCache").doc("templates").set({ wabaId: info.wabaId, templates, lastSyncAt: Date.now() }); } catch {}
+  return templates;
+}
+
+exports.scheduledInboxSync = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 120, memory: "256MB" })
+  .pubsub.schedule("every 5 minutes")
+  .onRun(async () => {
+    try { await syncInboxToCache(50); } catch (e) { console.warn("inbox sync:", e.message); }
+    return null;
+  });
+
+exports.scheduledTemplatesSync = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 60, memory: "256MB" })
+  .pubsub.schedule("every 6 hours")
+  .onRun(async () => {
+    try { await syncTemplatesToCache(); } catch (e) { console.warn("tpl sync:", e.message); }
+    return null;
+  });
+
 exports.apiInboxList = functions
   .region("us-central1")
   .runWith({ timeoutSeconds: 60, memory: "256MB" })

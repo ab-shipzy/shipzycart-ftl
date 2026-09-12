@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-86";
+const BUILD_VERSION = "v2026.05.11-87";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-87",
+    date:    "2026-09-12",
+    title:   "Backend auto-sync for everyone + cookie consent",
+    highlights: [
+      "Cache freshness is now the BACKEND's job: two scheduled jobs run on the server — the mailbox syncs to the database every 5 minutes and WhatsApp template statuses every 6 hours — so every user always reads fresh data straight from Firestore, whether or not anyone has the tab open. Browsers no longer trigger any background syncs; the Refresh button still forces a live pull on demand.",
+      "First-visit cookie banner: new users see a one-time 'Cookies & local storage' notice explaining sign-in, settings and the instant-load cache — with an Accept all button. Consent is remembered; the banner never reappears.",
+    ],
+  },
   {
     version: "v2026.05.11-86",
     date:    "2026-09-12",
@@ -5840,6 +5849,7 @@ export default function App() {
         <CloudSyncEngine cloudConfig={cloudConfig} onStatus={setCloudStatus} />
         <PresenceEngine cloudConfig={cloudConfig} currentUser={null} onPresenceUpdate={setPresenceList} />
         <LoginScreen users={users} onLogin={onLogin} cloudConfig={cloudConfig} cloudStatus={cloudStatus} authError={authError} />
+        <CookieConsent />
       </>
     );
   }
@@ -6082,6 +6092,7 @@ export default function App() {
         </div>
       )}
 
+      <CookieConsent />
       {voiceBookOpen && (
         <VoiceBookModal
           warehouses={warehouses}
@@ -20252,12 +20263,9 @@ function WaTemplatesTab({ currentUser, showToast }) {
     finally { if (force) setBusy(false); }
   };
   useEffect(() => {
-    (async () => {
-      const first = await load(false);
-      const lastAt = (first && first.lastSyncAt) || _ftlUi.tplSyncedAt || 0;
-      // Template statuses change rarely — auto-hit Meta only if stale > 6h.
-      if (Date.now() - Number(lastAt || 0) > 6 * 3600_000) load(true).catch(() => {});
-    })();
+    // Backend cron refreshes the template cache every 6 hours — the tab
+    // just reads Firestore. Refresh forces a live Meta sync if needed.
+    load(false);
   }, []);
 
   const request = async () => {
@@ -20365,6 +20373,32 @@ function WaTemplatesTab({ currentUser, showToast }) {
    Backend records each attempt (per WhatsApp number) in its own
    Firestore — this tab reads it: recipient, LR, sent/failed, why,
    direct vs template, PDF or not. ── */
+/* ── First-visit cookie/storage consent ── */
+function CookieConsent() {
+  const [show, setShow] = useState(() => {
+    try { return !localStorage.getItem("shipzy:cookieConsent:v1"); } catch { return false; }
+  });
+  if (!show) return null;
+  const accept = () => {
+    try { localStorage.setItem("shipzy:cookieConsent:v1", JSON.stringify({ acceptedAt: new Date().toISOString() })); } catch {}
+    setShow(false);
+  };
+  return (
+    <div className="fixed bottom-0 inset-x-0 z-[95] p-3 sm:p-4">
+      <div className="max-w-2xl mx-auto bg-[#00304a] text-white rounded-xl shadow-2xl px-4 py-3.5 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+        <div className="text-[11.5px] leading-relaxed flex-1">
+          <span className="font-bold">🍪 Cookies & local storage.</span>{" "}
+          ShipzyCart uses cookies and browser storage to keep you signed in, remember your settings, and make pages load instantly (offline-ready cache). No advertising or third-party tracking.
+        </div>
+        <button onClick={accept}
+          className="shrink-0 px-4 py-2 rounded-lg bg-[#43edd4] hover:brightness-110 text-[#00304a] text-[11.5px] font-bold transition">
+          Accept all
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CommsLog() {
   const [entries, setEntries] = useState(() => _ftlUi.comms);
   const [busy, setBusy] = useState(false);
@@ -20546,14 +20580,10 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
   };
   const refresh = () => load(true);
   useEffect(() => {
-    // Already rendered from the client cache (zero loading). Silently
-    // revalidate from Firestore, and hit Gmail in the background only
-    // if the last real sync is older than 5 minutes.
-    (async () => {
-      const first = await load(false);
-      const lastAt = (first && first.lastSyncAt) || _ftlUi.inboxSyncedAt || 0;
-      if (Date.now() - Number(lastAt || 0) > 5 * 60_000) load(true).catch(() => {});
-    })();
+    // Instant render from client cache, then revalidate from Firestore.
+    // The BACKEND cron keeps mailCache fresh (every 5 min) for everyone —
+    // no client-triggered Gmail syncs anymore. Refresh forces one anyway.
+    load(false);
   }, []);
 
   const openMsg = async (uid) => {
