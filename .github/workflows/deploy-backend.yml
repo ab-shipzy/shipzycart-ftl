@@ -1,1 +1,33 @@
+name: Deploy backend functions (shipzycart-ftl)
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+  workflow_dispatch: {}
 
+jobs:
+  deploy-functions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install function dependencies
+        working-directory: backend/ewb-functions
+        run: npm install --no-audit --no-fund
+
+      - name: Deploy to Firebase Functions
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          echo "$FIREBASE_SERVICE_ACCOUNT" > /tmp/sa.json
+          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa.json
+          cat > firebase-backend.json << 'CFG'
+          { "functions": { "source": "backend/ewb-functions" } }
+          CFG
+          npx firebase-tools@13 deploy --only functions --project shipzycart-ftl --non-interactive --config firebase-backend.json --force
+          rm /tmp/sa.json
