@@ -26,8 +26,6 @@ jobs:
         run: |
           echo "$FIREBASE_SERVICE_ACCOUNT" > /tmp/sa.json
           export GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa.json
-          cat > firebase-backend.json << 'CFG'
-          { "functions": { "source": "backend/ewb-functions" } }
-          CFG
+          echo '{ "functions": { "source": "backend/ewb-functions" } }' > firebase-backend.json
           npx firebase-tools@13 deploy --only functions --project shipzycart-ftl --non-interactive --config firebase-backend.json --force
           rm /tmp/sa.json
