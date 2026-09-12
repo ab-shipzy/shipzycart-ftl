@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-87";
+const BUILD_VERSION = "v2026.05.11-88";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-88",
+    date:    "2026-09-12",
+    title:   "What's New tour — the Sept-12 wave, card by card",
+    highlights: [
+      "Anyone logging in after 11:00 PM on 12 Sept gets a one-time guided tour: six swipeable cards covering the day's releases — LR sharing by email+WhatsApp PDF, automatic vendor pickup messages, the E-Way Bill command center, Mail Inbox with billing evidence, Speak-to-Book, and the speed/self-service upgrades. Next / Back / progress dots / Skip tour; once finished or skipped, it never shows again for that user.",
+      "One-time forced sign-out ships with this build: every existing session is logged out once so the whole team signs in fresh and meets the tour (and the new cookie notice).",
+    ],
+  },
   {
     version: "v2026.05.11-87",
     date:    "2026-09-12",
@@ -4818,6 +4827,117 @@ async function extractPdfText(file) {
    Shows for 3 seconds when currentUser transitions from null to a
    user (covers both the login moment and an already-logged-in user
    opening the domain fresh), then fades away. ── */
+/* ── What's New tour: one-time card walkthrough of the Sept-12 wave ──
+   Shown once per user (per browser) after the welcome splash, for
+   anyone logging in after the cutoff. Next steps through the cards;
+   Skip ends the tour — either way it never shows again. ── */
+const WHATS_NEW_CUTOFF = new Date(2026, 8, 12, 23, 0, 0).getTime(); // 12 Sep 2026, 11:00 PM
+const WHATS_NEW_CARDS = [
+  {
+    emoji: "✉️📱",
+    title: "One-click LR sharing — Email + WhatsApp",
+    color: "#0074ff",
+    points: [
+      "Blue Share LR button in every shipment: the LR goes out as a real PDF — attached on email AND as a WhatsApp document.",
+      "Recipients come pre-selected from each warehouse's saved lists (Settings → Warehouses → LR Sharing). Draft/Final toggle included.",
+      "Sending runs in the background — a notification tells you '✉️ Email sent · 📱 WhatsApp sent' when done.",
+    ],
+  },
+  {
+    emoji: "🚚",
+    title: "Vendors get pickup details automatically",
+    color: "#43edd4",
+    points: [
+      "Assign a vendor on any shipment (new booking or later in the drawer) — the vendor's WhatsApp instantly receives LR number, vehicle needed, pickup date, and full PICKUP & DROP blocks with addresses, contacts and Google Maps links.",
+      "The manual 'vehicle chahiye, yahan se wahan' message is history. Each shipment notifies once per vendor — no spam.",
+    ],
+  },
+  {
+    emoji: "🧾",
+    title: "E-Way Bill command center",
+    color: "#f59e0b",
+    points: [
+      "EWB Inbox: one Fetch pulls every e-way bill clients generated with Shipzy as transporter — auto-matched to LRs by invoice number, one-click attach.",
+      "Dashboard radar tile warns when any EWB is expired or expiring within 24h — with one-jump extend.",
+      "Cancel (24h), Reject wrongly-assigned bills (72h), generate Consolidated EWB for multi-LR trucks, and take over Transporter ID — all in the E-Way Bill tab.",
+    ],
+  },
+  {
+    emoji: "📥",
+    title: "Mail Inbox + billing evidence",
+    color: "#8b5cf6",
+    points: [
+      "The ftl-ops mailbox lives inside the app now — approval emails appear in the Mail Inbox tab, auto-synced every 5 minutes.",
+      "Link any email to its LR; at billing time, print it with the 'Shipzy Logistics — Email Evidence · LR XXXX' header. Unlink anytime.",
+      "Comms Log tab records every email & WhatsApp the system sent — recipient, LR, SENT/FAILED and why. WA Templates tab shows Meta approval status live.",
+    ],
+  },
+  {
+    emoji: "🎙️",
+    title: "Speak to Book + smoother flows",
+    color: "#ec4899",
+    points: [
+      "Tap the gradient mic in the top bar and say the booking in ANY language — 'Bangalore se Delhi bhejna hai' — AI extracts the lane, warehouses auto-match, one tap books with real AWB + LR.",
+      "Marking Delivered no longer demands a POD — attach if you have it, add later from Documents; the dashboard still tracks what's missing.",
+    ],
+  },
+  {
+    emoji: "⚡",
+    title: "Everything is faster & self-service",
+    color: "#10b981",
+    points: [
+      "Comms tabs open instantly — data is cached in your browser and kept fresh by the server itself (mailbox every 5 min, templates every 6 h).",
+      "All credentials (email, WhatsApp, WhiteBooks) are managed by the super-admin in Settings → Integrations — with test buttons. No files, no terminal, ever.",
+    ],
+  },
+];
+
+function WhatsNewTour({ onClose }) {
+  const [i, setI] = useState(0);
+  const card = WHATS_NEW_CARDS[i];
+  const last = i === WHATS_NEW_CARDS.length - 1;
+  return (
+    <div className="fixed inset-0 z-[85] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-[#00304a]/70 backdrop-blur-[3px]"></div>
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div className="px-6 pt-6 pb-4 text-center" style={{ background: `linear-gradient(135deg, ${card.color}18, transparent)` }}>
+          <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#0074ff] mb-2">What's new in ShipzyCart</div>
+          <div className="text-5xl mb-2">{card.emoji}</div>
+          <h3 className="text-[17px] font-bold text-[#00304a] leading-snug">{card.title}</h3>
+        </div>
+        <div className="px-6 pb-4">
+          <ul className="space-y-2.5">
+            {card.points.map((p, idx) => (
+              <li key={idx} className="flex items-start gap-2 text-[12px] text-slate-600 leading-relaxed">
+                <span className="mt-0.5 shrink-0 w-4 h-4 rounded-full grid place-items-center text-[9px] font-bold text-white" style={{ background: card.color }}>✓</span>
+                <span>{p}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="px-6 pb-3 flex items-center justify-center gap-1.5">
+          {WHATS_NEW_CARDS.map((_, idx) => (
+            <button key={idx} onClick={() => setI(idx)}
+              className={`h-1.5 rounded-full transition-all ${idx === i ? "w-6 bg-[#0074ff]" : "w-1.5 bg-slate-200"}`} />
+          ))}
+        </div>
+        <div className="px-6 pb-5 flex items-center justify-between gap-3">
+          <button onClick={onClose} className="px-3 py-2 text-[11.5px] text-slate-400 hover:text-[#00304a]">Skip tour</button>
+          <div className="flex items-center gap-2">
+            {i > 0 && (
+              <button onClick={() => setI(i - 1)} className="px-4 py-2 rounded-lg border border-slate-200 text-[12px] font-semibold text-slate-600">← Back</button>
+            )}
+            <button onClick={() => last ? onClose() : setI(i + 1)}
+              className="px-5 py-2 rounded-lg bg-[#0074ff] hover:bg-[#005fd1] text-white text-[12px] font-bold shadow-lg shadow-[#0074ff]/30">
+              {last ? "Done ✓" : `Next → (${i + 1}/${WHATS_NEW_CARDS.length})`}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WelcomeSplash({ name, onDone }) {
   const [leaving, setLeaving] = useState(false);
   useEffect(() => {
@@ -5174,6 +5294,30 @@ export default function App() {
 
   // Welcome splash — fires when a user appears (fresh open or login)
   const [welcomeName, setWelcomeName] = useState(null);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const _wnKey = (u) => `shipzy:whatsNew:sept12:${u?.id || "anon"}`;
+  const _maybeWhatsNew = (u) => {
+    try {
+      if (!u) return;
+      if (Date.now() < WHATS_NEW_CUTOFF) return;
+      if (localStorage.getItem(_wnKey(u))) return;
+      setWhatsNewOpen(true);
+    } catch {}
+  };
+  const _closeWhatsNew = () => {
+    try { localStorage.setItem(_wnKey(currentUser), new Date().toISOString()); } catch {}
+    setWhatsNewOpen(false);
+  };
+  // ONE-TIME forced logout (Sept-12 release): everyone signs in fresh and
+  // gets the What's-New tour. The flag ensures this runs once per browser.
+  useEffect(() => {
+    try {
+      if (currentUser && !localStorage.getItem("shipzy:forceLogout:sept12")) {
+        localStorage.setItem("shipzy:forceLogout:sept12", "1");
+        onLogout();
+      }
+    } catch {}
+  }, [currentUser?.id]);
   const _prevUserRef = useRef(null);
   useEffect(() => {
     if (currentUser && !_prevUserRef.current) {
@@ -6083,7 +6227,7 @@ export default function App() {
       )}
 
       {welcomeName && (
-        <WelcomeSplash name={welcomeName} onDone={() => setWelcomeName(null)} />
+        <WelcomeSplash name={welcomeName} onDone={() => { setWelcomeName(null); _maybeWhatsNew(currentUser); }} />
       )}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 px-5 py-3 rounded-xl bg-[#00304a] text-white shadow-2xl flex items-center gap-2 animate-[fadeIn_.2s_ease-out]">
@@ -6092,6 +6236,7 @@ export default function App() {
         </div>
       )}
 
+      {whatsNewOpen && <WhatsNewTour onClose={_closeWhatsNew} />}
       <CookieConsent />
       {voiceBookOpen && (
         <VoiceBookModal
