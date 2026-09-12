@@ -526,9 +526,13 @@ exports.apiEwbDetails = functions
      create → genewaybill, partb → vehewb, extend → extendvalidity */
 
 const ACTION_PATHS = {
-  create: "/ewaybillapi/v1.03/ewayapi/genewaybill",
-  partb:  "/ewaybillapi/v1.03/ewayapi/vehewb",
-  extend: "/ewaybillapi/v1.03/ewayapi/extendvalidity",
+  create:             "/ewaybillapi/v1.03/ewayapi/genewaybill",
+  partb:              "/ewaybillapi/v1.03/ewayapi/vehewb",
+  extend:             "/ewaybillapi/v1.03/ewayapi/extendvalidity",
+  cancel:             "/ewaybillapi/v1.03/ewayapi/canewb",
+  reject:             "/ewaybillapi/v1.03/ewayapi/rejewb",
+  consolidate:        "/ewaybillapi/v1.03/ewayapi/gencewb",
+  "update-transporter": "/ewaybillapi/v1.03/ewayapi/updatetransporter",
 };
 
 exports.apiEwbActions = functions
@@ -546,7 +550,7 @@ exports.apiEwbActions = functions
 
       const { action, payload } = req.body || {};
       const path = ACTION_PATHS[action];
-      if (!path)   return res.status(400).json({ ok: false, error: "action must be create | partb | extend" });
+      if (!path)   return res.status(400).json({ ok: false, error: "action must be create | partb | extend | cancel | reject | consolidate | update-transporter" });
       if (!payload || typeof payload !== "object")
         return res.status(400).json({ ok: false, error: "payload object required" });
 
@@ -587,6 +591,7 @@ exports.apiEwbActions = functions
         action,
         data: {
           ewbNo:      d.ewayBillNo ?? d.ewbNo ?? null,
+          cEwbNo:     d.cEwbNo ?? d.cEWBNo ?? d.tripSheetNo ?? null,
           ewbDate:    d.ewayBillDate ?? d.ewbDt ?? null,
           validUpto:  d.validUpto ?? null,
           vehUpdDate: d.vehUpdDate ?? null,
@@ -1066,5 +1071,72 @@ exports.apiInboxGet = functions
     } catch (e) {
       try { client && client.close(); } catch {}
       return res.status(500).json({ ok: false, error: e.message || "Inbox error" });
+    }
+  });
+
+
+/* ── apiEwbAssigned: e-way bills assigned to us (as transporter) for a date ──
+   GET ?date=dd/mm/yyyy  → list of EWBs any party generated with Shipzy as
+   the transporter on that date. Powers the EWB Inbox auto-import. ── */
+exports.apiEwbAssigned = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 60, memory: "256MB" })
+  .https.onRequest(async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Headers", "Content-Type, X-Shipzy-API-Key");
+    if (req.method === "OPTIONS") return res.status(204).send("");
+    try {
+      if (!(await verifyApiKey(req))) return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
+      const date = String(req.query.date || "").trim(); // dd/mm/yyyy
+      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(date))
+        return res.status(400).json({ ok: false, error: "date required as dd/mm/yyyy" });
+
+      const c = await cfg();
+      await getWbToken(c);
+      const host = WB_HOSTS[c.env] || WB_HOSTS.sandbox;
+      const resp = await httpsJson({
+        host,
+        path: `${process.env.WB_PATH_PREFIX || ""}/ewaybillapi/v1.03/ewayapi/getewaybillsfortransporter?email=${encodeURIComponent(c.email)}&date=${encodeURIComponent(date)}`,
+        method: "GET",
+        headers: {
+          "ip_address": c.ip, "client_id": c.client_id,
+          "client_secret": c.client_secret, "gstin": c.gstin,
+          "Accept": "application/json",
+        },
+      });
+
+      const j = resp.json || {};
+      const codes = j?.errorCodes || j?.data?.errorCodes;
+      // NIC "no records found" (code 322/325 family) → empty list, not an error
+      const noRecords = codes && String(codes).includes("322");
+      if (noRecords) return res.json({ ok: true, data: { date, bills: [] } });
+      const failed = resp.status !== 200 || j.status_cd === "0" || j.status === "0" || codes || j.error;
+      if (failed) {
+        const msg = nicMessage(codes) || j?.error?.message || j?.status_desc || `Portal call failed (HTTP ${resp.status})`;
+        if (/no.*record|not.*found/i.test(String(msg))) return res.json({ ok: true, data: { date, bills: [] } });
+        return res.status(502).json({ ok: false, error: String(msg).slice(0, 400) });
+      }
+
+      let arr = j.data ?? j;
+      if (!Array.isArray(arr)) arr = arr?.ewbList || arr?.list || (arr && typeof arr === "object" && arr.ewbNo ? [arr] : []);
+      const bills = (arr || []).map(b => ({
+        ewbNo:       b.ewbNo ?? b.ewayBillNo ?? null,
+        ewbDate:     b.ewbDate ?? b.ewayBillDate ?? null,
+        docNo:       b.docNo ?? null,
+        docDate:     b.docDate ?? null,
+        fromGstin:   b.fromGstin ?? b.userGstin ?? null,
+        fromTrdName: b.fromTrdName ?? null,
+        toGstin:     b.toGstin ?? null,
+        toTrdName:   b.toTrdName ?? null,
+        fromPlace:   b.fromPlace ?? null,
+        toPlace:     b.toPlace ?? null,
+        totInvValue: b.totInvValue ?? b.totalValue ?? null,
+        validUpto:   b.validUpto ?? null,
+        status:      b.status ?? null,
+        vehicleNo:   b.vehicleNo ?? null,
+      })).filter(b => b.ewbNo);
+      return res.json({ ok: true, data: { date, bills } });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message || "Internal error" });
     }
   });

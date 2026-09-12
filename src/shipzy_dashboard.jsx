@@ -20,9 +20,22 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-76";
+const BUILD_VERSION = "v2026.05.11-77";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-77",
+    date:    "2026-09-12",
+    title:   "Full EWB command center — inbox, radar, cancel, reject, CEWB, transporter",
+    highlights: [
+      "EWB INBOX (auto-import): new card in the E-Way Bill tab — pick a date, Fetch, and every e-way bill any client generated with Shipzy as transporter appears in a table (EWB no, invoice, parties, value, validity). Already-known EWBs show a green LR badge; the rest auto-suggest their LR by matching invoice number ('Attach → LR-2026-0142' one-click), or attach manually by typing any LR/AWB/invoice. Attaching writes the EWB number AND its validity onto the shipment.",
+      "EWB EXPIRY RADAR: new dashboard attention tile — counts e-way bills on moving shipments that are already expired (red) or expire within 24 hours (amber). Hover shows the exact LRs; click jumps to the E-Way Bill tab to extend. Validity dates flow in automatically from the inbox, create, and extend actions.",
+      "CANCEL EWB: within 24h of generation — reason + remarks, right from the actions panel. The shipment's EWB gets flagged cancelled so the radar ignores it.",
+      "REJECT EWB: wrongly generated against our GSTIN by someone else? Reject within 72h so it doesn't count against us.",
+      "CONSOLIDATED EWB: one truck carrying many LRs — paste the EWB numbers, vehicle and origin, generate one trip-sheet CEWB for the driver.",
+      "UPDATE TRANSPORTER: assign/replace the transporter ID on any EWB (defaults to Shipzy's GSTIN) — takes Part-B control when clients forget to name us.",
+    ],
+  },
   {
     version: "v2026.05.11-76",
     date:    "2026-09-12",
@@ -8896,6 +8909,29 @@ function Dashboard({ metrics, shipments, activeShipments, warehouses, vehicles, 
     : null;
   const healthOf = (n, warnAt, criticalAt) => n >= criticalAt ? "critical" : n >= warnAt ? "warn" : "ok";
 
+  // EWB expiry radar: shipments still moving whose stored EWB validity
+  // is already past or ends within the next 24 hours.
+  const _ewbNow = Date.now();
+  const _ewbSoon = _ewbNow + 24 * 3600 * 1000;
+  let ewbExpired = 0, ewbExpiring = 0;
+  const _ewbRows = [];
+  (shipments || []).forEach(s => {
+    if (s.deletedAt || ["Delivered", "Cancelled"].includes(s.status)) return;
+    const entries = [
+      ...(s.invoices || []).map(i => ({ no: i.ewayBillNo, v: i.ewbValidUpto, c: i.ewbCancelled })),
+      { no: s.ewayBillNo, v: s.ewbValidUpto, c: s.ewbCancelled },
+    ];
+    entries.forEach(e => {
+      if (!e.no || !e.v || e.c) return;
+      const d = parseNicDateTime(e.v);
+      if (!d) return;
+      const t = d.getTime();
+      if (t < _ewbNow) { ewbExpired++; _ewbRows.push({ lr: s.lrNumber || s.awb, no: e.no, v: e.v, gone: true }); }
+      else if (t < _ewbSoon) { ewbExpiring++; _ewbRows.push({ lr: s.lrNumber || s.awb, no: e.no, v: e.v, gone: false }); }
+    });
+  });
+  const ewbRisk = ewbExpired + ewbExpiring;
+
   const primaryTiles = [
     { key: "active", label: "Active shipments", value: activeCount,
       sub: `${metrics.booked} booked · ${metrics.inTransit} transit`,
@@ -8917,6 +8953,11 @@ function Dashboard({ metrics, shipments, activeShipments, warehouses, vehicles, 
       sub: metrics.podOverdue7DaysCount === 0 ? `${metrics.podOverdueCount} within window` : "collection likely blocked",
       spark: null, health: healthOf(metrics.podOverdue7DaysCount, 1, 3), animate: true,
       onClick: () => setRoute("shipments") },
+    { key: "ewbRisk", label: "EWB expiring", value: ewbRisk,
+      sub: ewbRisk === 0 ? "all valid" : `${ewbExpired} expired · ${ewbExpiring} within 24h`,
+      spark: null, health: ewbExpired > 0 ? "critical" : ewbExpiring > 0 ? "warn" : "ok", animate: true,
+      onClick: () => setRoute("ewb-prep"),
+      hoverDetail: _ewbRows.slice(0, 3).map(r => ({ label: `${r.lr} · ${r.no}`, value: r.gone ? "EXPIRED" : r.v })) },
   ];
 
   const secondaryTiles = [
@@ -21737,6 +21778,19 @@ function _toEwbDate(d) {
 }
 
 /** State name → 2-digit GST state code as number. */
+/* Parse NIC datetime "dd/mm/yyyy hh:mm:ss AM/PM" (or dd/mm/yyyy) → Date|null */
+function parseNicDateTime(v) {
+  const s = String(v || "").trim();
+  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
+  if (!m) return null;
+  let h = Number(m[4] || 23), min = Number(m[5] || 59), sec = Number(m[6] || 0);
+  const ap = (m[7] || "").toUpperCase();
+  if (ap === "PM" && h < 12) h += 12;
+  if (ap === "AM" && h === 12) h = 0;
+  const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), h, min, sec);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 function _stateCodeNum(stateName) {
   if (!stateName) return 0;
   const map = {
@@ -24440,11 +24494,31 @@ function EwbActions({ shipments, warehouses, billingClients, persistShipments, s
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null); // { kind:"ok"|"err", msg }
 
+  // Write validity (and cancelled flag) back onto whichever shipment carries
+  // this EWB number — powers the dashboard EWB Expiry radar.
+  const stampEwb = (ewbNo, fields) => {
+    const key = String(ewbNo || "").replace(/\D/g, "");
+    if (!key) return;
+    let touched = false;
+    const next = shipments.map(s => {
+      let hit = false;
+      const invoices = (s.invoices || []).map(inv =>
+        String(inv.ewayBillNo || "").replace(/\D/g, "") === key ? (hit = true, { ...inv, ...fields }) : inv);
+      if (String(s.ewayBillNo || "").replace(/\D/g, "") === key) hit = true;
+      if (!hit) return s;
+      touched = true;
+      return { ...s, invoices, ...(String(s.ewayBillNo || "").replace(/\D/g, "") === key ? fields : {}) };
+    });
+    if (touched) persistShipments(next);
+  };
+
   const callAction = async (action, payload, onOk) => {
     setBusy(true); setResult(null);
     try {
       const res = await callFtlApi("/apiEwbActions", { method: "POST", body: { action, payload } });
       const d = (res && res.data) || {};
+      if (d.validUpto && (payload.ewbNo || d.ewbNo)) stampEwb(payload.ewbNo || d.ewbNo, { ewbValidUpto: d.validUpto });
+      if (action === "cancel" && payload.ewbNo) stampEwb(payload.ewbNo, { ewbCancelled: true });
       onOk && onOk(d);
       const bits = [];
       if (d.ewbNo) bits.push(`EWB ${d.ewbNo}`);
@@ -24609,6 +24683,26 @@ function EwbActions({ shipments, warehouses, billingClients, persistShipments, s
     transDocNo: ex.transDocNo || "", transDocDate: ex.transDocDate || "",
   });
 
+  /* ---------- CANCEL / REJECT / UPDATE TRANSPORTER ---------- */
+  const [cx, setCx] = useState({ ewbNo: "", cancelRsnCode: "3", cancelRmrk: "" });
+  const setCX = (k, v) => setCx(p => ({ ...p, [k]: v }));
+  const [rj, setRj] = useState({ ewbNo: "" });
+  const [ut, setUt] = useState({ ewbNo: "", transporterId: SHIPZY_TRANSPORTER.id });
+  const setUT = (k, v) => setUt(p => ({ ...p, [k]: v }));
+
+  const submitCancel = () => callAction("cancel", {
+    ewbNo: Number(String(cx.ewbNo).replace(/\D/g, "")),
+    cancelRsnCode: Number(cx.cancelRsnCode),
+    cancelRmrk: cx.cancelRmrk || "Cancelled",
+  });
+  const submitReject = () => callAction("reject", {
+    ewbNo: Number(String(rj.ewbNo).replace(/\D/g, "")),
+  });
+  const submitUpdTrans = () => callAction("update-transporter", {
+    ewbNo: Number(String(ut.ewbNo).replace(/\D/g, "")),
+    transporterId: (ut.transporterId || "").trim().toUpperCase(),
+  });
+
   const tabBtn = (k, label) => (
     <button onClick={() => { setActive(active === k ? null : k); setResult(null); }}
       className={`px-3 py-1.5 rounded text-[11.5px] font-semibold border transition
@@ -24628,7 +24722,7 @@ function EwbActions({ shipments, warehouses, billingClients, persistShipments, s
           <h3 className="text-[13px] font-bold text-[#00304a]">E-Way Bill Actions</h3>
           <p className="text-[10.5px] text-slate-500">Direct portal actions via API — no NIC login needed.</p>
         </div>
-        <div className="flex gap-1.5">{tabBtn("create", "＋ Create EWB")}{tabBtn("partb", "Update Part-B")}{tabBtn("extend", "Extend validity")}</div>
+        <div className="flex gap-1.5 flex-wrap">{tabBtn("create", "＋ Create EWB")}{tabBtn("partb", "Update Part-B")}{tabBtn("extend", "Extend validity")}{tabBtn("cancel", "Cancel")}{tabBtn("reject", "Reject")}{tabBtn("updtrans", "Transporter ID")}</div>
       </div>
 
       {result && (
@@ -24791,6 +24885,53 @@ function EwbActions({ shipments, warehouses, billingClients, persistShipments, s
           </button>
         </div>
       )}
+
+      {active === "cancel" && (
+        <div className="mt-3 space-y-3">
+          <div className="text-[10px] text-amber-600">NIC allows cancellation only within 24 hours of generation, and only by the generator (our GSTIN).</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <F label="E-Way Bill No.">{inp(cx.ewbNo, v=>setCX("ewbNo",v), "12-digit", "font-mono")}</F>
+            <F label="Reason">
+              <select value={cx.cancelRsnCode} onChange={e=>setCX("cancelRsnCode",e.target.value)} className={inputCls}>
+                <option value="1">Duplicate</option><option value="2">Order cancelled</option>
+                <option value="3">Data entry mistake</option><option value="4">Others</option>
+              </select>
+            </F>
+            <F label="Remarks">{inp(cx.cancelRmrk, v=>setCX("cancelRmrk",v), "optional")}</F>
+          </div>
+          <button onClick={submitCancel} disabled={busy}
+            className="px-4 py-2 rounded bg-rose-500 hover:bg-rose-600 text-white text-[12px] font-bold disabled:opacity-50">
+            {busy ? "Cancelling…" : "Cancel E-Way Bill"}
+          </button>
+        </div>
+      )}
+
+      {active === "reject" && (
+        <div className="mt-3 space-y-3">
+          <div className="text-[10px] text-amber-600">Reject e-way bills wrongly generated against our GSTIN by another party — allowed within 72 hours of generation.</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <F label="E-Way Bill No.">{inp(rj.ewbNo, v=>setRj({ ewbNo: v }), "12-digit", "font-mono")}</F>
+          </div>
+          <button onClick={submitReject} disabled={busy}
+            className="px-4 py-2 rounded bg-rose-500 hover:bg-rose-600 text-white text-[12px] font-bold disabled:opacity-50">
+            {busy ? "Rejecting…" : "Reject E-Way Bill"}
+          </button>
+        </div>
+      )}
+
+      {active === "updtrans" && (
+        <div className="mt-3 space-y-3">
+          <div className="text-[10px] text-slate-400">Assign or change the transporter on an EWB — puts Part-B control in that transporter's hands. Defaults to Shipzy's ID.</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <F label="E-Way Bill No.">{inp(ut.ewbNo, v=>setUT("ewbNo",v), "12-digit", "font-mono")}</F>
+            <F label="Transporter ID (GSTIN/TRANSIN)">{inp(ut.transporterId, v=>setUT("transporterId",v), "", "font-mono uppercase")}</F>
+          </div>
+          <button onClick={submitUpdTrans} disabled={busy}
+            className="px-4 py-2 rounded bg-[#0074ff] text-white text-[12px] font-bold disabled:opacity-50">
+            {busy ? "Updating…" : "Update Transporter"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -24815,6 +24956,10 @@ function EwbPrep({ shipments, warehouses, vehicles, billingClients, vendors, per
 
       <EwbActions shipments={shipments} warehouses={warehouses} billingClients={billingClients} persistShipments={persistShipments} showToast={showToast} />
 
+      <EwbInboxCard shipments={shipments} persistShipments={persistShipments} showToast={showToast} />
+
+      <CewbCard shipments={shipments} showToast={showToast} />
+
       <GstinVerifyCard />
 
       <EwbPdfDownload />
@@ -24823,6 +24968,209 @@ function EwbPrep({ shipments, warehouses, vehicles, billingClients, vendors, per
 }
 
 /* ── Verify a GSTIN against the government registry ────────── */
+/* ── EWB Inbox: e-way bills assigned to Shipzy (as transporter) ──
+   One fetch per date pulls every EWB any client generated with our
+   GSTIN as transporter. Auto-matches to shipments by invoice number;
+   one click attaches (EWB no + validity) to the right LR. ── */
+function EwbInboxCard({ shipments, persistShipments, showToast }) {
+  const todayDmy = () => { const d = new Date(); return `${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}/${d.getFullYear()}`; };
+  const [dateIso, setDateIso] = useState(() => new Date().toISOString().slice(0, 10));
+  const [bills, setBills] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [linkFor, setLinkFor] = useState(null);
+
+  const isoToDmy = (iso) => { const [y, m, d] = iso.split("-"); return `${d}/${m}/${y}`; };
+  const normNo = (v) => String(v || "").replace(/\D/g, "");
+  const normDoc = (v) => String(v || "").trim().toLowerCase();
+
+  const ewbOwner = (ewbNo) => {
+    const key = normNo(ewbNo);
+    return shipments.find(s => !s.deletedAt && (
+      normNo(s.ewayBillNo) === key ||
+      (s.invoices || []).some(i => normNo(i.ewayBillNo) === key)));
+  };
+  const docSuggestion = (docNo) => {
+    const key = normDoc(docNo);
+    if (!key) return null;
+    return shipments.find(s => !s.deletedAt && !isParentLeg(s) && (
+      normDoc(s.invoiceNo) === key ||
+      (s.invoices || []).some(i => normDoc(i.invoiceNo) === key)));
+  };
+
+  const fetchBills = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await callFtlApi("/apiEwbAssigned", { query: { date: isoToDmy(dateIso) } });
+      setBills((res && res.data && res.data.bills) || []);
+    } catch (e) { setErr(e.message || "Fetch failed"); setBills([]); }
+    finally { setBusy(false); }
+  };
+
+  const attach = (bill, shipId) => {
+    const key = normDoc(bill.docNo);
+    const next = shipments.map(s => {
+      if (s.id !== shipId) return s;
+      let placed = false;
+      let invoices = (s.invoices || []).map(inv => {
+        if (!placed && (normDoc(inv.invoiceNo) === key || !inv.ewayBillNo)) {
+          placed = true;
+          return { ...inv, ewayBillNo: String(bill.ewbNo), ewbValidUpto: bill.validUpto || "" };
+        }
+        return inv;
+      });
+      if (!placed) {
+        if (invoices.length === 0 && !s.ewayBillNo) {
+          return { ...s, ewayBillNo: String(bill.ewbNo), ewbValidUpto: bill.validUpto || "" };
+        }
+        invoices = [...invoices, { invoiceNo: bill.docNo || "", invoiceValue: Number(bill.totInvValue || 0), ewayBillNo: String(bill.ewbNo), ewbValidUpto: bill.validUpto || "" }];
+      }
+      return { ...s, invoices };
+    });
+    persistShipments(next);
+    setLinkFor(null);
+    const sh = next.find(x => x.id === shipId);
+    showToast && showToast(`EWB ${bill.ewbNo} attached to ${sh?.lrNumber || sh?.awb}`);
+  };
+
+  const searchLr = (q) => {
+    const needle = q.trim().toLowerCase();
+    return shipments
+      .filter(s => !s.deletedAt && !isParentLeg(s))
+      .filter(s => [s.lrNumber, s.awb, s.invoiceNo].some(v => v && String(v).toLowerCase().includes(needle)))
+      .slice(0, 7)
+      .map(s => ({ id: s.id, title: s.lrNumber || s.awb, sub: `AWB ${s.awb || "—"} · ${s.status}` }));
+  };
+
+  return (
+    <div className="bg-white rounded-md border border-slate-200 p-4 mt-4">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <div className="text-[12.5px] font-bold text-[#00304a] flex items-center gap-1.5"><Inbox className="w-4 h-4 text-[#0074ff]" /> EWB Inbox — assigned to Shipzy</div>
+          <div className="text-[10.5px] text-slate-400">Every e-way bill where a client named us transporter, straight from the portal. Attach each to its LR.</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="date" value={dateIso} onChange={e=>setDateIso(e.target.value)} className={inputCls + " w-auto"} />
+          <button onClick={fetchBills} disabled={busy}
+            className="px-3 py-2 rounded bg-[#00304a] hover:bg-[#0074ff] text-white text-[11.5px] font-bold disabled:opacity-50">
+            {busy ? "Fetching…" : "Fetch"}
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="mt-3 text-[11px] rounded px-2.5 py-1.5 bg-rose-50 border border-rose-200 text-rose-600">{err}</div>}
+      {bills && bills.length === 0 && !err && !busy && (
+        <div className="mt-3 text-[11.5px] text-slate-400 italic">No e-way bills assigned to Shipzy on this date.</div>
+      )}
+
+      {bills && bills.length > 0 && (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-[11px]">
+            <thead><tr className="text-left text-[9.5px] uppercase tracking-wider text-slate-400">
+              <th className="py-1.5 pr-3">EWB No.</th><th className="pr-3">Invoice</th><th className="pr-3">From → To</th>
+              <th className="pr-3">Value</th><th className="pr-3">Valid Upto</th><th></th>
+            </tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {bills.map(b => {
+                const owner = ewbOwner(b.ewbNo);
+                const sugg = !owner ? docSuggestion(b.docNo) : null;
+                return (
+                  <tr key={b.ewbNo}>
+                    <td className="py-2 pr-3 font-mono font-semibold text-[#00304a]">{b.ewbNo}</td>
+                    <td className="pr-3 font-mono">{b.docNo || "—"}</td>
+                    <td className="pr-3 max-w-[220px] truncate" title={`${b.fromTrdName || b.fromGstin || ""} → ${b.toTrdName || b.toGstin || ""}`}>
+                      {(b.fromTrdName || b.fromGstin || "?")} → {(b.toTrdName || b.toGstin || "?")}
+                    </td>
+                    <td className="pr-3">₹{Number(b.totInvValue || 0).toLocaleString("en-IN")}</td>
+                    <td className="pr-3 whitespace-nowrap">{b.validUpto || "—"}</td>
+                    <td className="py-1.5">
+                      {owner ? (
+                        <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 whitespace-nowrap">✓ {owner.lrNumber || owner.awb}</span>
+                      ) : linkFor === b.ewbNo ? (
+                        <div className="w-52">
+                          <SuggestInput selected={null} onSelect={(r) => attach(b, r.id)} onClear={() => setLinkFor(null)}
+                            search={searchLr} placeholder="LR / AWB / invoice…" emptyHint={'No shipment matches "{q}".'} />
+                        </div>
+                      ) : sugg ? (
+                        <button onClick={() => attach(b, sugg.id)}
+                          className="px-2 py-1 rounded bg-[#0074ff] text-white text-[9.5px] font-bold whitespace-nowrap">
+                          Attach → {sugg.lrNumber || sugg.awb}
+                        </button>
+                      ) : (
+                        <button onClick={() => setLinkFor(b.ewbNo)}
+                          className="px-2 py-1 rounded border border-slate-300 text-[9.5px] font-bold text-slate-600 hover:border-[#0074ff] hover:text-[#0074ff] whitespace-nowrap">
+                          Attach to LR…
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Consolidated EWB: many EWBs, one truck, one trip sheet ── */
+function CewbCard({ shipments, showToast }) {
+  const [form, setForm] = useState({ vehicleNo: "", fromPlace: "", fromState: "29", transMode: "1", ewbNos: "" });
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const submit = async () => {
+    const nos = String(form.ewbNos).split(/[\s,;]+/).map(x => x.replace(/\D/g, "")).filter(x => x.length >= 10);
+    if (nos.length < 1) { setResult({ kind: "err", msg: "Enter at least one 12-digit EWB number." }); return; }
+    setBusy(true); setResult(null);
+    try {
+      const res = await callFtlApi("/apiEwbActions", { method: "POST", body: {
+        action: "consolidate",
+        payload: {
+          fromPlace: form.fromPlace, fromState: Number(form.fromState) || 0,
+          vehicleNo: (form.vehicleNo || "").toUpperCase(), transMode: form.transMode,
+          tripSheetEwbBills: nos.map(n => ({ ewbNo: Number(n) })),
+        },
+      }});
+      const d = (res && res.data) || {};
+      const no = d.cEwbNo || d.ewbNo;
+      setResult({ kind: "ok", msg: no ? `Consolidated EWB generated: ${no} — note it on the trip sheet.` : "Done." });
+      showToast && showToast(no ? `CEWB ${no} generated` : "CEWB generated");
+    } catch (e) { setResult({ kind: "err", msg: e.message || "Failed" }); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="bg-white rounded-md border border-slate-200 p-4 mt-4">
+      <div className="text-[12.5px] font-bold text-[#00304a]">Consolidated EWB — one truck, many LRs</div>
+      <div className="text-[10.5px] text-slate-400">Combine multiple e-way bills moving in the same vehicle into one trip sheet the driver carries.</div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+        <FieldMini label="Vehicle No."><input value={form.vehicleNo} onChange={e=>set("vehicleNo",e.target.value)} className={inputCls + " font-mono uppercase"} /></FieldMini>
+        <FieldMini label="From Place"><input value={form.fromPlace} onChange={e=>set("fromPlace",e.target.value)} placeholder="Bangalore" className={inputCls} /></FieldMini>
+        <FieldMini label="State Code"><input value={form.fromState} onChange={e=>set("fromState",e.target.value)} className={inputCls + " font-mono"} /></FieldMini>
+        <FieldMini label="Mode">
+          <select value={form.transMode} onChange={e=>set("transMode",e.target.value)} className={inputCls}>
+            <option value="1">Road</option><option value="2">Rail</option><option value="3">Air</option><option value="4">Ship</option>
+          </select>
+        </FieldMini>
+      </div>
+      <FieldMini label="E-Way Bill numbers (comma / space / line separated)">
+        <textarea value={form.ewbNos} onChange={e=>set("ewbNos",e.target.value)} rows={2}
+          placeholder="171012345678, 171087654321…" className={inputCls + " font-mono mt-1"} />
+      </FieldMini>
+      <div className="flex items-center gap-3 mt-3">
+        <button onClick={submit} disabled={busy}
+          className="px-4 py-2 rounded bg-[#0074ff] text-white text-[12px] font-bold disabled:opacity-50">
+          {busy ? "Generating…" : "Generate Consolidated EWB"}
+        </button>
+        {result && <div className={`text-[11px] ${result.kind === "ok" ? "text-emerald-600 font-semibold" : "text-rose-500"}`}>{result.msg}</div>}
+      </div>
+    </div>
+  );
+}
+
 function GstinVerifyCard() {
   const [gstin, setGstin] = useState("");
   const [busy, setBusy] = useState(false);
