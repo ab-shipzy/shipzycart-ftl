@@ -20,9 +20,21 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-70";
+const BUILD_VERSION = "v2026.05.11-71";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-71",
+    date:    "2026-09-12",
+    title:   "One-click LR sharing — Email + WhatsApp with per-warehouse recipients",
+    highlights: [
+      "New blue 'Share LR' button in the shipment drawer header. One click opens the share dialog with recipients PRE-SELECTED from both the pickup and delivery warehouse's saved lists — tap Send and the LR is on its way by email and WhatsApp together.",
+      "Per-warehouse recipient lists: Settings → Warehouses now has an 'LR Sharing' section per location — Email To, Email CC, and WhatsApp numbers (comma-separated). Configure once; every future share to/from that location comes pre-filled. Ad-hoc extra emails/numbers can be typed in the dialog too, and any pre-selected recipient can be un-ticked per send.",
+      "Email carries the LR COPY — the exact printable LR document attached (opens in any browser, print-to-PDF), plus a clean details summary in the body. Draft/Final toggle labels the subject and message accordingly (defaults to Draft while status is Booked).",
+      "WhatsApp sends the LR & vehicle details as a formatted message — LR no, date, from/to, client, vehicle & driver, invoice, e-way bill, transporter — via your WhatsApp Business Cloud API. 10-digit numbers get +91 automatically.",
+      "Backend: new /apiShareLr endpoint (same shipzy-vendor project, same API key). Email via SMTP (works with Microsoft 365 / Gmail app passwords), WhatsApp via Meta Cloud API — both configured in functions/.env.",
+    ],
+  },
   {
     version: "v2026.05.11-70",
     date:    "2026-09-06",
@@ -14360,6 +14372,185 @@ function buildVehicleConfirmationText(s, warehouses /* vendors intentionally unu
 /* ============================================================
    SHIPMENT DRAWER  (booking, packages, invoice, vehicle, cost, revenue, docs)
    ============================================================ */
+/* ── Share LR by Email + WhatsApp ───────────────────────────
+   One click from the drawer: sends the LR copy (the exact printable
+   HTML, attached) + vehicle/LR details to per-warehouse configured
+   email IDs, CC lists and WhatsApp numbers — via /apiShareLr on the
+   backend (SMTP + WhatsApp Business Cloud API). ── */
+function ShareLrModal({ s, warehouses, vehicles, vendors, billingClients, onClose, showToast }) {
+  const pickup   = warehouses.find(w => w.id === s.pickupWarehouseId);
+  const delivery = warehouses.find(w => w.id === s.deliveryWarehouseId);
+  const veh      = vehicles.find(v => v.id === s.vehicleTypeId);
+  const bc       = billingClients.find(b => b.id === s.billingClientId);
+
+  const splitList = (str) => String(str || "").split(/[,;\n]/).map(x => x.trim()).filter(Boolean);
+  const defaults = useMemo(() => {
+    const to = [...new Set([...splitList(pickup?.shareEmails), ...splitList(delivery?.shareEmails)])];
+    const cc = [...new Set([...splitList(pickup?.shareCcEmails), ...splitList(delivery?.shareCcEmails)])].filter(e => !to.includes(e));
+    const wa = [...new Set([...splitList(pickup?.shareWhatsapps), ...splitList(delivery?.shareWhatsapps)])];
+    return { to, cc, wa };
+  }, [s.id]);
+
+  const [toSel, setToSel] = useState(() => new Set(defaults.to));
+  const [ccSel, setCcSel] = useState(() => new Set(defaults.cc));
+  const [waSel, setWaSel] = useState(() => new Set(defaults.wa));
+  const [extraTo, setExtraTo] = useState("");
+  const [extraWa, setExtraWa] = useState("");
+  const [draftMode, setDraftMode] = useState(s.status === "Booked");
+  const [sendEmail, setSendEmail] = useState(true);
+  const [sendWa, setSendWa] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const toggle = (set_, setter) => (v) => setter(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; });
+
+  const detailLines = () => {
+    const L = [];
+    L.push(`${draftMode ? "DRAFT " : ""}LR ${s.lrNumber || "—"} · AWB ${s.awb || "—"}`);
+    L.push(`Date: ${fmtDate(s.lrDate || s.createdAt)}`);
+    L.push(`From: ${pickup ? [pickup.name, pickup.city].filter(Boolean).join(", ") : "—"}`);
+    L.push(`To: ${delivery ? [delivery.name, delivery.city].filter(Boolean).join(", ") : "—"}`);
+    if (bc) L.push(`Client: ${bc.name}`);
+    L.push(`Vehicle: ${[veh?.name, s.vehicleNumber].filter(Boolean).join(" · ") || "—"}`);
+    if (s.driverName || s.driverNumber) L.push(`Driver: ${[s.driverName, s.driverNumber].filter(Boolean).join(" · ")}`);
+    const inv = (s.invoices && s.invoices[0]) || {};
+    const invNo = inv.invoiceNo || s.invoiceNo;
+    if (invNo) L.push(`Invoice: ${invNo}${(inv.invoiceValue || s.invoiceValue) ? ` · ₹${Number(inv.invoiceValue || s.invoiceValue).toLocaleString("en-IN")}` : ""}`);
+    const ewb = inv.ewayBillNo || s.ewayBillNo;
+    if (ewb) L.push(`E-Way Bill: ${ewb}`);
+    L.push(`Transporter: ${SHIPZY_TRANSPORTER.name} (${SHIPZY_TRANSPORTER.id})`);
+    return L;
+  };
+
+  const send = async () => {
+    const to = [...toSel, ...splitList(extraTo)];
+    const cc = [...ccSel];
+    const wa = [...waSel, ...splitList(extraWa)];
+    if (sendEmail && to.length === 0 && (!sendWa || wa.length === 0)) { setResult({ kind: "err", msg: "Pick at least one recipient." }); return; }
+    if (!sendEmail && (!sendWa || wa.length === 0)) { setResult({ kind: "err", msg: "Pick at least one recipient." }); return; }
+    setBusy(true); setResult(null);
+    try {
+      const lines = detailLines();
+      const waText = `🚚 *Shipzy Logistics — ${draftMode ? "Draft " : ""}LR*\n\n` + lines.map(l => {
+        const i = l.indexOf(":");
+        return i > 0 ? `*${l.slice(0, i)}:*${l.slice(i + 1)}` : `*${l}*`;
+      }).join("\n");
+      const lrHtml = buildLrPdfHtml(s, warehouses, vehicles, vendors)
+        .replace(/<script>[\s\S]*?<\/script>/, ""); // no auto-print in the attachment
+      const payload = {
+        subject: `${draftMode ? "Draft " : ""}LR ${s.lrNumber || s.awb} — ${pickup?.city || "?"} → ${delivery?.city || "?"} — Shipzy Logistics`,
+        text: lines.join("\n"),
+        detailsHtml: `<div style="font-family:Arial,sans-serif;font-size:13px;color:#111"><h2 style="color:#00304a;margin:0 0 4px">${draftMode ? "Draft " : ""}LR ${escapeHtml(s.lrNumber || "")}</h2><p>${lines.map(escapeHtml).join("<br>")}</p><p style="color:#666;font-size:11px">The ${draftMode ? "draft " : ""}LR copy is attached (open in any browser, print to save as PDF).</p></div>`,
+        lrHtml,
+        filename: `${draftMode ? "DRAFT-" : ""}LR-${(s.lrNumber || s.awb || "shipment").replace(/[^\w-]/g, "_")}.html`,
+        to: sendEmail ? to : [],
+        cc: sendEmail ? cc : [],
+        waNumbers: sendWa ? wa : [],
+        waText,
+      };
+      const res = await callLtlApi("/apiShareLr", { method: "POST", body: payload });
+      const d = (res && res.data) || {};
+      const bits = [];
+      if (sendEmail && to.length) bits.push(d.emailOk ? `✓ Email sent to ${to.length + cc.length} recipient${to.length + cc.length > 1 ? "s" : ""}` : `✗ Email: ${d.emailError || "failed"}`);
+      if (sendWa && wa.length) bits.push(`WhatsApp: ${d.waSent || 0}/${wa.length} sent${d.waErrors?.length ? ` (${d.waErrors[0]})` : ""}`);
+      setResult({ kind: d.emailOk !== false && !(d.waErrors || []).length ? "ok" : "warn", msg: bits.join(" · ") || "Done." });
+      showToast && showToast("LR shared");
+    } catch (e) {
+      setResult({ kind: "err", msg: e.message || "Sending failed" });
+    } finally { setBusy(false); }
+  };
+
+  const Chip = ({ v, on, tog, mono }) => (
+    <button onClick={() => tog(v)}
+      className={`px-2 py-1 rounded border text-[10.5px] ${mono ? "font-mono" : ""} transition
+        ${on ? "bg-[#0074ff]/10 border-[#0074ff]/40 text-[#0074ff] font-semibold" : "bg-white border-slate-200 text-slate-500"}`}>
+      {on ? "✓ " : ""}{v}
+    </button>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose}></div>
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-[#00304a]">Share LR — Email & WhatsApp</h3>
+            <p className="text-xs text-slate-500 mt-0.5">{s.lrNumber || s.awb} · {pickup?.city || "?"} → {delivery?.city || "?"}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-[#00304a]"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            {["Draft LR", "Final LR"].map((lbl, i) => (
+              <button key={lbl} onClick={() => setDraftMode(i === 0)}
+                className={`px-3 py-1.5 rounded text-[11px] font-bold border transition
+                  ${(i === 0) === draftMode ? "bg-[#00304a] text-white border-[#00304a]" : "bg-white text-slate-500 border-slate-200"}`}>
+                {lbl}
+              </button>
+            ))}
+            <div className="text-[10px] text-slate-400">Draft adds a "DRAFT" label to subject & message.</div>
+          </div>
+
+          <div className="rounded-md border border-slate-200 p-3">
+            <label className="flex items-center gap-2 text-[12px] font-bold text-[#00304a]">
+              <input type="checkbox" checked={sendEmail} onChange={(e) => setSendEmail(e.target.checked)} className="accent-[#0074ff]" /> Email — LR copy attached
+            </label>
+            {sendEmail && (
+              <div className="mt-2 space-y-2">
+                <div>
+                  <div className="text-[9.5px] uppercase tracking-wider text-slate-500 font-bold mb-1">To</div>
+                  {defaults.to.length === 0 && <div className="text-[10.5px] text-slate-400 italic mb-1">No default emails set for these warehouses — add them in Settings → Warehouses, or type below.</div>}
+                  <div className="flex flex-wrap gap-1.5">{defaults.to.map(v => <Chip key={v} v={v} on={toSel.has(v)} tog={toggle(toSel, setToSel)} />)}</div>
+                  <input value={extraTo} onChange={(e) => setExtraTo(e.target.value)} placeholder="Add more emails (comma-separated)…" className={inputCls + " text-xs mt-1.5"} />
+                </div>
+                {defaults.cc.length > 0 && (
+                  <div>
+                    <div className="text-[9.5px] uppercase tracking-wider text-slate-500 font-bold mb-1">CC</div>
+                    <div className="flex flex-wrap gap-1.5">{defaults.cc.map(v => <Chip key={v} v={v} on={ccSel.has(v)} tog={toggle(ccSel, setCcSel)} />)}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-md border border-slate-200 p-3">
+            <label className="flex items-center gap-2 text-[12px] font-bold text-[#00304a]">
+              <input type="checkbox" checked={sendWa} onChange={(e) => setSendWa(e.target.checked)} className="accent-[#25D366]" /> WhatsApp — LR & vehicle details
+            </label>
+            {sendWa && (
+              <div className="mt-2 space-y-1.5">
+                {defaults.wa.length === 0 && <div className="text-[10.5px] text-slate-400 italic">No default numbers for these warehouses — add in Settings → Warehouses, or type below.</div>}
+                <div className="flex flex-wrap gap-1.5">{defaults.wa.map(v => <Chip key={v} v={v} on={waSel.has(v)} tog={toggle(waSel, setWaSel)} mono />)}</div>
+                <input value={extraWa} onChange={(e) => setExtraWa(e.target.value)} placeholder="Add more numbers (comma-separated)…" className={inputCls + " text-xs font-mono"} />
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="text-[9.5px] uppercase tracking-wider text-slate-500 font-bold mb-1">Message preview</div>
+            <pre className="text-[10.5px] leading-relaxed whitespace-pre-wrap font-sans bg-slate-50 border border-slate-100 rounded p-2.5 text-slate-600 max-h-40 overflow-y-auto scrollbar-thin">{detailLines().join("\n")}</pre>
+          </div>
+
+          {result && (
+            <div className={`text-[11px] rounded px-2.5 py-1.5 border ${result.kind === "ok" ? "bg-emerald-50 border-emerald-200 text-emerald-700" : result.kind === "warn" ? "bg-amber-50 border-amber-200 text-amber-700" : "bg-rose-50 border-rose-200 text-rose-600"}`}>
+              {result.msg}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t border-slate-200 flex items-center justify-between gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-xs text-slate-600 hover:text-[#00304a]">Close</button>
+          <button onClick={send} disabled={busy}
+            className="px-5 py-2 rounded-lg text-xs font-bold bg-[#0074ff] hover:bg-[#0074ff]/90 text-white shadow-lg shadow-[#0074ff]/30 disabled:opacity-50 flex items-center gap-1.5">
+            {busy ? <><ShipzySpinner size="sm" /> Sending…</> : <>Send now</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ShipmentDrawer({ shipment, shipments, warehouses, vehicles, billingClients, vendors, persistBillingClients, onClose, onSave, onDelete, onOpenShipment, showToast, currentUser, roles, documents, persistDocuments, subTransporters, persistSubTransporters }) {
   const [s, setS]   = useState(shipment);
   const [tab, setTab] = useState("booking"); // booking | packages | invoice | vehicle | cost | revenue
@@ -14464,6 +14655,7 @@ function ShipmentDrawer({ shipment, shipments, warehouses, vehicles, billingClie
   }, [tabs.map(t => t.k).join("|")]);
 
   const [lrLoading, setLrLoading] = useState(false);
+  const [lrShareOpen, setLrShareOpen] = useState(false);
   const generateLR = () => {
     // Aggregator gate: if any vehicle leg uses an aggregator vendor, that
     // leg MUST have a sub-transporter selected before the LR can be issued.
@@ -14537,6 +14729,11 @@ function ShipmentDrawer({ shipment, shipments, warehouses, vehicles, billingClie
               {detailsCopied
                 ? <><CheckCircle2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Copied</span></>
                 : <><Copy className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Copy Details</span></>}
+            </button>
+            <button onClick={() => setLrShareOpen(true)}
+              title="Share LR by Email & WhatsApp"
+              className="px-2.5 sm:px-3 py-2 bg-[#0074ff] hover:bg-[#005fd1] text-white text-xs font-bold rounded-lg flex items-center gap-1.5 transition shadow-sm">
+              <Send className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Share LR</span>
             </button>
             <button onClick={() => setShareOpen(true)}
               title="Share with driver"
@@ -14690,6 +14887,10 @@ function ShipmentDrawer({ shipment, shipments, warehouses, vehicles, billingClie
         </div>
       </aside>
 
+      {lrShareOpen && (
+        <ShareLrModal s={s} warehouses={warehouses} vehicles={vehicles} vendors={vendors} billingClients={billingClients}
+          onClose={() => setLrShareOpen(false)} showToast={showToast} />
+      )}
       {shareOpen && (
         <ShareDriverModal
           shipment={s}
@@ -16571,6 +16772,17 @@ function generateLRsForShipment(s, warehouses, vehicles, vendors) {
 }
 
 function generateLRPdf(s, warehouses, vehicles, vendors, vehicleLeg = null, vehicleIndex = null) {
+  const html = buildLrPdfHtml(s, warehouses, vehicles, vendors, vehicleLeg, vehicleIndex);
+  const w = window.open("", "_blank");
+  if (!w) { alert("Allow pop-ups to view the LR."); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+}
+
+/* Returns the full printable LR HTML (same document the print window shows).
+   Reused by email sharing — the email carries this exact LR as attachment. */
+function buildLrPdfHtml(s, warehouses, vehicles, vendors, vehicleLeg = null, vehicleIndex = null) {
   const pickup   = warehouses.find(w => w.id === s.pickupWarehouseId);
   const delivery = warehouses.find(w => w.id === s.deliveryWarehouseId);
 
@@ -16963,11 +17175,7 @@ function generateLRPdf(s, warehouses, vehicles, vendors, vehicleLeg = null, vehi
 <script>setTimeout(() => window.print(), 400);</script>
 </body></html>`;
 
-  const w = window.open("", "_blank");
-  if (!w) { alert("Allow pop-ups to view the LR."); return; }
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
+  return html;
 }
 
 /* ============================================================
@@ -20730,6 +20938,25 @@ function SettingsDrawer({ kind, item, onClose, onSave }) {
                 <Field label="State"><input value={form.state} onChange={(e)=>set("state", e.target.value)} className={inputCls} /></Field>
               </div>
               <Field label="GSTIN"><input value={form.gstin || ""} onChange={(e)=>set("gstin", e.target.value)} className={inputCls} /></Field>
+
+              {/* LR sharing recipients for this location */}
+              <div className="rounded-md border border-[#0074ff]/20 bg-[#0074ff]/[0.03] p-3 space-y-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-[#0074ff] font-bold">LR Sharing — default recipients for this location</div>
+                <Field label="Email To (comma-separated)">
+                  <input value={form.shareEmails || ""} onChange={(e)=>set("shareEmails", e.target.value)}
+                    placeholder="ops@client.com, wh.incharge@client.com" className={inputCls + " text-xs"} />
+                </Field>
+                <Field label="Email CC (comma-separated)">
+                  <input value={form.shareCcEmails || ""} onChange={(e)=>set("shareCcEmails", e.target.value)}
+                    placeholder="manager@client.com" className={inputCls + " text-xs"} />
+                </Field>
+                <Field label="WhatsApp numbers (comma-separated, 10-digit or with country code)">
+                  <input value={form.shareWhatsapps || ""} onChange={(e)=>set("shareWhatsapps", e.target.value)}
+                    placeholder="9845012345, 919810067890" className={inputCls + " text-xs font-mono"} />
+                </Field>
+                <div className="text-[10px] text-slate-400">Whenever an LR touching this warehouse is shared, these recipients come pre-selected in the share dialog.</div>
+              </div>
+
               <Field label="Google Maps + Code, Link, or Coordinates">
                 <input value={form.googleCode || ""} onChange={(e)=>set("googleCode", e.target.value)} placeholder="12.9716, 77.5946  or  QMW7+Q5 Bengaluru  or  https://maps.app.goo.gl/…" className={inputCls + " font-mono text-xs"} />
                 <div className="text-[10px] text-slate-400 mt-1">For best freight-calc accuracy, paste decimal coordinates (right-click on Google Maps → "Copy coordinates"). Plus Codes and Maps URLs also work; shortened links (g.co, maps.app.goo.gl) fall back to the city.</div>

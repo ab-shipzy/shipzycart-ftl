@@ -671,3 +671,126 @@ exports.apiGstinDetails = functions
       return res.status(500).json({ ok: false, error: e.message || "Internal error" });
     }
   });
+
+
+/* ── apiShareLr: share LR by Email (SMTP) + WhatsApp (Cloud API) ──
+   POST { subject, text, detailsHtml, lrHtml, filename,
+          to[], cc[], waNumbers[], waText }
+   Env (.env):
+     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM
+     WA_PHONE_ID, WA_TOKEN   (WhatsApp Business Cloud API)          */
+
+function sendSmtpMail({ to, cc, subject, text, html, attachment }) {
+  return new Promise((resolve) => {
+    let nodemailer;
+    try { nodemailer = require("nodemailer"); }
+    catch { return resolve({ ok: false, error: "nodemailer not installed — run npm install in functions/" }); }
+    const host = process.env.SMTP_HOST, user = process.env.SMTP_USER, pass = process.env.SMTP_PASS;
+    if (!host || !user || !pass) return resolve({ ok: false, error: "SMTP not configured — set SMTP_HOST/SMTP_USER/SMTP_PASS in functions/.env" });
+    const port = Number(process.env.SMTP_PORT || 587);
+    const transporter = nodemailer.createTransport({
+      host, port, secure: port === 465,
+      auth: { user, pass },
+    });
+    transporter.sendMail({
+      from: process.env.MAIL_FROM || user,
+      to: to.join(", "),
+      cc: cc && cc.length ? cc.join(", ") : undefined,
+      subject, text, html,
+      attachments: attachment ? [{ filename: attachment.filename, content: attachment.content, contentType: "text/html" }] : [],
+    }, (err) => {
+      if (err) resolve({ ok: false, error: String(err.message || err).slice(0, 200) });
+      else resolve({ ok: true });
+    });
+  });
+}
+
+function waSendText(phoneId, token, toNumber, body) {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify({
+      messaging_product: "whatsapp",
+      to: toNumber,
+      type: "text",
+      text: { preview_url: false, body },
+    });
+    const req = https.request({
+      host: "graph.facebook.com",
+      path: `/v20.0/${phoneId}/messages`,
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      let raw = "";
+      res.on("data", c => raw += c);
+      res.on("end", () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve({ ok: true });
+        else {
+          let msg = raw.slice(0, 200);
+          try { msg = JSON.parse(raw).error?.message || msg; } catch {}
+          resolve({ ok: false, error: msg });
+        }
+      });
+    });
+    req.on("error", (e) => resolve({ ok: false, error: e.message }));
+    req.setTimeout(15000, () => req.destroy(new Error("timeout")));
+    req.write(payload);
+    req.end();
+  });
+}
+
+exports.apiShareLr = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 120, memory: "256MB" })
+  .https.onRequest(async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Headers", "Content-Type, X-Shipzy-API-Key");
+    if (req.method === "OPTIONS") return res.status(204).send("");
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "POST only" });
+
+    try {
+      if (!(await verifyApiKey(req))) {
+        return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
+      }
+      const b = req.body || {};
+      const to = Array.isArray(b.to) ? b.to.filter(Boolean) : [];
+      const cc = Array.isArray(b.cc) ? b.cc.filter(Boolean) : [];
+      const waNumbers = (Array.isArray(b.waNumbers) ? b.waNumbers : [])
+        .map(n => String(n).replace(/\D/g, ""))
+        .map(n => n.length === 10 ? "91" + n : n)
+        .filter(n => n.length >= 11);
+
+      const out = { emailOk: null, emailError: null, waSent: 0, waErrors: [] };
+
+      if (to.length > 0) {
+        const mail = await sendSmtpMail({
+          to, cc,
+          subject: String(b.subject || "LR — Shipzy Logistics").slice(0, 200),
+          text: String(b.text || ""),
+          html: String(b.detailsHtml || ""),
+          attachment: b.lrHtml ? { filename: String(b.filename || "LR.html"), content: String(b.lrHtml) } : null,
+        });
+        out.emailOk = mail.ok;
+        if (!mail.ok) out.emailError = mail.error;
+      }
+
+      if (waNumbers.length > 0) {
+        const phoneId = process.env.WA_PHONE_ID, token = process.env.WA_TOKEN;
+        if (!phoneId || !token) {
+          out.waErrors.push("WhatsApp not configured — set WA_PHONE_ID and WA_TOKEN in functions/.env");
+        } else {
+          for (const num of waNumbers) {
+            const r = await waSendText(phoneId, token, num, String(b.waText || b.text || ""));
+            if (r.ok) out.waSent++;
+            else out.waErrors.push(`${num}: ${r.error}`.slice(0, 120));
+          }
+        }
+      }
+
+      return res.json({ ok: true, data: out });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message || "Internal error" });
+    }
+  });
