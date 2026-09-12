@@ -13,16 +13,17 @@ const WB_HOSTS = {
   production: "api.whitebooks.in",
 };
 
-function cfg() {
+async function cfg() {
+  const ic = await getIntegrations();
   return {
-    email:         process.env.WB_EMAIL,
-    client_id:     process.env.WB_CLIENT_ID,
-    client_secret: process.env.WB_CLIENT_SECRET,
-    gstin:         process.env.WB_GSTIN,
-    username:      process.env.WB_USERNAME,
-    password:      process.env.WB_PASSWORD,
-    env:           process.env.WB_ENV || "sandbox",
-    ip:            process.env.WB_IP_ADDRESS || "127.0.0.1",
+    email:         ic.wbEmail        || process.env.WB_EMAIL,
+    client_id:     ic.wbClientId     || process.env.WB_CLIENT_ID,
+    client_secret: ic.wbClientSecret || process.env.WB_CLIENT_SECRET,
+    gstin:         ic.wbGstin        || process.env.WB_GSTIN,
+    username:      ic.wbUsername     || process.env.WB_USERNAME,
+    password:      ic.wbPassword     || process.env.WB_PASSWORD,
+    env:           ic.wbEnv          || process.env.WB_ENV || "production",
+    ip:            ic.wbIp           || process.env.WB_IP_ADDRESS || "127.0.0.1",
   };
 }
 
@@ -478,7 +479,7 @@ exports.apiEwbDetails = functions
         return res.status(400).json({ ok: false, error: "ewbNo must be a 12-digit e-way bill number" });
       }
 
-      const c = cfg();
+      const c = await cfg();
       if (!c.client_id || !c.client_secret || !c.email) {
         return res.status(500).json({ ok: false, error: "WhiteBooks credentials missing — check functions/.env" });
       }
@@ -549,7 +550,7 @@ exports.apiEwbActions = functions
       if (!payload || typeof payload !== "object")
         return res.status(400).json({ ok: false, error: "payload object required" });
 
-      const c = cfg();
+      const c = await cfg();
       if (!c.client_id || !c.client_secret || !c.email) {
         return res.status(500).json({ ok: false, error: "WhiteBooks credentials missing — check functions/.env" });
       }
@@ -618,7 +619,7 @@ exports.apiGstinDetails = functions
         return res.status(400).json({ ok: false, error: "gstin must be a valid 15-character GSTIN" });
       }
 
-      const c = cfg();
+      const c = await cfg();
       if (!c.client_id || !c.client_secret || !c.email) {
         return res.status(500).json({ ok: false, error: "WhiteBooks credentials missing — check functions/.env" });
       }
@@ -835,12 +836,17 @@ exports.apiIntegrations = functions
           mailFrom: c.mailFrom || "",
           waPhoneId: _mask(c.waPhoneId), waToken: _mask(c.waToken),
           imapUser: c.imapUser || "", imapPass: _mask(c.imapPass),
+          wbEmail: c.wbEmail || "", wbUsername: c.wbUsername || "",
+          wbPassword: _mask(c.wbPassword), wbClientId: _mask(c.wbClientId),
+          wbClientSecret: _mask(c.wbClientSecret), wbGstin: c.wbGstin || "",
+          wbEnv: c.wbEnv || "", wbIp: c.wbIp || "",
         }});
       }
 
       const b = req.body || {};
       if (b.action === "save") {
-        const allowed = ["smtpHost","smtpPort","smtpUser","smtpPass","mailFrom","waPhoneId","waToken","imapUser","imapPass"];
+        const allowed = ["smtpHost","smtpPort","smtpUser","smtpPass","mailFrom","waPhoneId","waToken","imapUser","imapPass",
+                         "wbEmail","wbUsername","wbPassword","wbClientId","wbClientSecret","wbGstin","wbEnv","wbIp"];
         const patch = {};
         allowed.forEach(k => {
           if (b.config && typeof b.config[k] === "string" && b.config[k].trim() !== "") {

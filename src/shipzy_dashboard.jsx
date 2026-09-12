@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-72";
+const BUILD_VERSION = "v2026.05.11-73";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-73",
+    date:    "2026-09-12",
+    title:   "WhiteBooks credentials in Settings — backend fully GitHub-deployable",
+    highlights: [
+      "Settings → Integrations now has a WhiteBooks / E-Way Bill API section: email, API username/password, client ID/secret, GSTIN, environment and registered IP — all managed from the app, stored on the backend's private Firestore like the rest. The functions read Settings first, .env only as fallback, so the .env file is no longer needed for anything.",
+      "With no secrets left in files, the backend joins the CI pipeline: a new deploy-backend workflow deploys all shipzy-vendor functions from GitHub whenever anything under backend/ changes — same push-to-deploy flow as the frontend.",
+    ],
+  },
   {
     version: "v2026.05.11-72",
     date:    "2026-09-12",
@@ -20083,7 +20092,8 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
    Saved server-side (backend Firestore) via /apiIntegrations — never
    in the shared app state, so ordinary users can't read secrets. ── */
 function IntegrationsPanel({ showToast, currentUser }) {
-  const empty = { smtpHost: "", smtpPort: "", smtpUser: "", smtpPass: "", mailFrom: "", waPhoneId: "", waToken: "", imapUser: "", imapPass: "" };
+  const empty = { smtpHost: "", smtpPort: "", smtpUser: "", smtpPass: "", mailFrom: "", waPhoneId: "", waToken: "", imapUser: "", imapPass: "",
+    wbEmail: "", wbUsername: "", wbPassword: "", wbClientId: "", wbClientSecret: "", wbGstin: "", wbEnv: "", wbIp: "" };
   const [form, setForm] = useState(empty);
   const [masked, setMasked] = useState({});
   const [busy, setBusy] = useState(false);
@@ -20161,6 +20171,21 @@ function IntegrationsPanel({ showToast, currentUser }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           <Field label={<span>IMAP User <M k="imapUser" /></span>}><input value={form.imapUser} onChange={e=>set("imapUser",e.target.value)} placeholder="(defaults to SMTP user)" className={inputCls} /></Field>
           <Field label={<span>IMAP App Password <M k="imapPass" /></span>}><input type="password" value={form.imapPass} onChange={e=>set("imapPass",e.target.value)} placeholder="(defaults to SMTP password)" className={inputCls + " font-mono"} /></Field>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-md border border-slate-200 p-4 space-y-2.5">
+        <div className="text-[11px] font-bold text-[#00304a] uppercase tracking-wider">WhiteBooks / E-Way Bill API</div>
+        <div className="text-[10.5px] text-slate-400">Filled once here, the backend .env is no longer needed for anything.</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <Field label={<span>WB Email <M k="wbEmail" /></span>}><input value={form.wbEmail} onChange={e=>set("wbEmail",e.target.value)} placeholder="ab@shipzy.in" className={inputCls} /></Field>
+          <Field label={<span>API Username <M k="wbUsername" /></span>}><input value={form.wbUsername} onChange={e=>set("wbUsername",e.target.value)} className={inputCls + " font-mono"} /></Field>
+          <Field label={<span>API Password <M k="wbPassword" /></span>}><input type="password" value={form.wbPassword} onChange={e=>set("wbPassword",e.target.value)} className={inputCls + " font-mono"} /></Field>
+          <Field label={<span>GSTIN <M k="wbGstin" /></span>}><input value={form.wbGstin} onChange={e=>set("wbGstin",e.target.value)} placeholder="29AEOFS3685R1ZO" className={inputCls + " font-mono uppercase"} /></Field>
+          <Field label={<span>Client ID <M k="wbClientId" /></span>}><input type="password" value={form.wbClientId} onChange={e=>set("wbClientId",e.target.value)} className={inputCls + " font-mono"} /></Field>
+          <Field label={<span>Client Secret <M k="wbClientSecret" /></span>}><input type="password" value={form.wbClientSecret} onChange={e=>set("wbClientSecret",e.target.value)} className={inputCls + " font-mono"} /></Field>
+          <Field label={<span>Environment <M k="wbEnv" /></span>}><input value={form.wbEnv} onChange={e=>set("wbEnv",e.target.value)} placeholder="production" className={inputCls} /></Field>
+          <Field label={<span>Registered IP <M k="wbIp" /></span>}><input value={form.wbIp} onChange={e=>set("wbIp",e.target.value)} placeholder="223.181.112.19" className={inputCls + " font-mono"} /></Field>
         </div>
       </div>
 
