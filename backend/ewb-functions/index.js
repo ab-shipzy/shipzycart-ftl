@@ -7,3 +7,4 @@ exports.apiInboxList = require("./apiEwbDetails-function").apiInboxList;
 exports.apiInboxGet = require("./apiEwbDetails-function").apiInboxGet;
 exports.apiEwbAssigned = require("./apiEwbDetails-function").apiEwbAssigned;
 exports.apiWaTemplates = require("./apiEwbDetails-function").apiWaTemplates;
+exports.apiCommsLog = require("./apiEwbDetails-function").apiCommsLog;

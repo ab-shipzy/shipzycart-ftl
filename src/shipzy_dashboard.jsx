@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-80";
+const BUILD_VERSION = "v2026.05.11-81";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-81",
+    date:    "2026-09-12",
+    title:   "Comms Log — every email & WhatsApp send, audited",
+    highlights: [
+      "New Comms Log tab (below Mail Inbox): the backend now records every send attempt — each email (with To/CC list and subject) and each WhatsApp number individually — with its REAL outcome. Columns: when, channel, recipient, LR, SENT/FAILED badge, and details (failure reason, 'via template' for new contacts, whether the LR PDF was attached).",
+      "Filters: All / Email / WhatsApp / Failed-only, plus a sent-vs-failed summary line. Test sends from Settings → Integrations are logged too. Latest 200 entries, newest first.",
+    ],
+  },
   {
     version: "v2026.05.11-80",
     date:    "2026-09-12",
@@ -5855,6 +5864,7 @@ export default function App() {
               showToast={showToast}
             />
           )}
+          {route === "comms-log" && <CommsLog />}
           {route === "mail-inbox" && (
             <MailInbox shipments={shipments} persistShipments={persistShipments} showToast={showToast} currentUser={currentUser} />
           )}
@@ -7052,6 +7062,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, desktopCollapsed, onTog
     { k:"vendor-payments",  label:"Vendor Payments",  icon:IndianRupee, requires:"view-vendor-payments" },
     { k:"freight-calc",     label:"Freight Calculator", icon:Calculator },
     { k:"mail-inbox",       label:"Mail Inbox",       icon:Inbox },
+    { k:"comms-log",        label:"Comms Log",        icon:Send },
     { k:"ltl-rates",        label:"LTL Rates",        icon:PackageCheck },
     { k:"ewb-prep",         label:"E-Way Bill Prep",  icon:FileSpreadsheet },
     { k:"documents",        label:"Documents",        icon:FileText },
@@ -20083,6 +20094,115 @@ function _monthSpanLabel(from, to) {
 }
 
 
+
+/* ── Comms Log: every email + WhatsApp send, with real outcomes ──
+   Backend records each attempt (per WhatsApp number) in its own
+   Firestore — this tab reads it: recipient, LR, sent/failed, why,
+   direct vs template, PDF or not. ── */
+function CommsLog() {
+  const [entries, setEntries] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [filter, setFilter] = useState("all"); // all | email | wa | failed
+
+  const load = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await callFtlApi("/apiCommsLog", { query: { limit: 200 } });
+      setEntries((res && res.data && res.data.entries) || []);
+    } catch (e) { setErr(e.message || "Could not load log"); setEntries([]); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const fmtTs = (ts) => {
+    if (!ts) return "—";
+    const d = new Date(Number(ts));
+    return `${String(d.getDate()).padStart(2,"0")} ${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()]} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+  };
+  const recipients = (e) => {
+    if (e.type === "email") {
+      const to = Array.isArray(e.to) ? e.to.join(", ") : String(e.to || "");
+      const cc = Array.isArray(e.cc) && e.cc.length ? ` (cc: ${e.cc.join(", ")})` : "";
+      return to + cc;
+    }
+    return String(e.to || "");
+  };
+
+  const shown = (entries || []).filter(e =>
+    filter === "all" ? true :
+    filter === "failed" ? e.status === "failed" :
+    e.type === filter);
+
+  const chip = (k, label) => (
+    <button onClick={() => setFilter(k)}
+      className={`px-2.5 py-1 rounded text-[10.5px] font-bold border transition
+        ${filter === k ? "bg-[#00304a] text-white border-[#00304a]" : "bg-white text-slate-500 border-slate-200"}`}>
+      {label}
+    </button>
+  );
+
+  const sentCount = (entries || []).filter(e => e.status === "sent").length;
+  const failCount = (entries || []).filter(e => e.status === "failed").length;
+
+  return (
+    <div className="p-3 lg:p-5 pb-24">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div>
+          <h2 className="text-[15px] font-bold text-[#00304a] flex items-center gap-2"><Send className="w-4 h-4 text-[#0074ff]" /> Comms Log</h2>
+          <p className="text-[11.5px] text-slate-500">Every email and WhatsApp the system sent — who, for which LR, and whether it landed.</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {chip("all", `All (${(entries || []).length})`)}
+          {chip("email", "✉️ Email")}
+          {chip("wa", "📱 WhatsApp")}
+          {chip("failed", `Failed (${failCount})`)}
+          <button onClick={load} disabled={busy}
+            className="px-3 py-1.5 rounded bg-[#00304a] hover:bg-[#0074ff] text-white text-[11.5px] font-semibold disabled:opacity-50 flex items-center gap-1.5">
+            <RefreshCw className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`} /> Refresh
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="mb-3 text-[11px] rounded px-3 py-2 bg-rose-50 border border-rose-200 text-rose-600">{err}</div>}
+      {entries && entries.length > 0 && (
+        <div className="mb-3 text-[11px] text-slate-500">{sentCount} sent · {failCount} failed (latest 200)</div>
+      )}
+
+      <div className="bg-white rounded-md border border-slate-200 overflow-x-auto">
+        {entries === null && <div className="p-6 text-center text-[12px] text-slate-400">Loading…</div>}
+        {entries && shown.length === 0 && <div className="p-6 text-center text-[12px] text-slate-400 italic">{filter === "all" ? "No sends yet — share an LR and it will appear here." : "Nothing matching this filter."}</div>}
+        {shown.length > 0 && (
+          <table className="w-full text-[11px]">
+            <thead><tr className="text-left text-[9.5px] uppercase tracking-wider text-slate-400 border-b border-slate-100">
+              <th className="py-2 px-3">When</th><th className="px-3">Channel</th><th className="px-3">To</th>
+              <th className="px-3">LR</th><th className="px-3">Status</th><th className="px-3">Details</th>
+            </tr></thead>
+            <tbody className="divide-y divide-slate-50">
+              {shown.map(e => (
+                <tr key={e.id} className={e.status === "failed" ? "bg-rose-50/40" : ""}>
+                  <td className="py-2 px-3 whitespace-nowrap text-slate-500">{fmtTs(e.ts)}</td>
+                  <td className="px-3 whitespace-nowrap">{e.type === "email" ? "✉️ Email" : "📱 WhatsApp"}</td>
+                  <td className="px-3 max-w-[260px] truncate font-mono text-[10.5px]" title={recipients(e)}>{recipients(e) || "—"}</td>
+                  <td className="px-3 whitespace-nowrap font-semibold text-[#00304a]">{e.lr || (e.subject === "Test email" || e.subject === "Test message" ? "test" : "—")}</td>
+                  <td className="px-3">
+                    <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${e.status === "sent" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-600"}`}>
+                      {e.status === "sent" ? "SENT" : "FAILED"}
+                    </span>
+                  </td>
+                  <td className="px-3 max-w-[280px] truncate text-slate-500" title={e.error || ""}>
+                    {e.status === "failed" ? (e.error || "—")
+                      : [e.via === "template" ? "via template" : null, e.pdf ? "LR PDF" : null, e.type === "email" && e.subject ? e.subject : null].filter(Boolean).join(" · ") || "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /* ── Mail Inbox: the ftl-ops@ mailbox inside the app ─────────
    Lists emails from the configured IMAP inbox (Settings →

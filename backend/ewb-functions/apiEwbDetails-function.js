@@ -949,6 +949,31 @@ exports.apiWaTemplates = functions
     }
   });
 
+
+/* ── Communications log: every email/WhatsApp send recorded in Firestore ── */
+async function logComm(entry) {
+  try {
+    await admin.firestore().collection("commsLog").add({ ...entry, ts: Date.now() });
+  } catch {}
+}
+
+exports.apiCommsLog = functions
+  .region("us-central1")
+  .https.onRequest(async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Headers", "Content-Type, X-Shipzy-API-Key");
+    if (req.method === "OPTIONS") return res.status(204).send("");
+    try {
+      if (!(await verifyApiKey(req))) return res.status(401).json({ ok: false, error: "Invalid or missing API key" });
+      const limit = Math.min(Number(req.query.limit || 200), 500);
+      const snap = await admin.firestore().collection("commsLog").orderBy("ts", "desc").limit(limit).get();
+      const entries = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      return res.json({ ok: true, data: { entries } });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message || "Internal error" });
+    }
+  });
+
 exports.apiShareLr = functions
   .region("us-central1")
   .runWith({ timeoutSeconds: 300, memory: "1GB" })
@@ -999,6 +1024,14 @@ exports.apiShareLr = functions
         });
         out.emailOk = mail.ok;
         if (!mail.ok) out.emailError = mail.error;
+        await logComm({
+          type: "email", to, cc,
+          subject: String(b.subject || "").slice(0, 140),
+          lr: String(b.tpl?.lr || "").slice(0, 40),
+          status: mail.ok ? "sent" : "failed",
+          error: mail.ok ? null : String(mail.error || "").slice(0, 200),
+          pdf: !!pdfBuf,
+        });
       }
 
       if (waNumbers.length > 0) {
@@ -1026,7 +1059,9 @@ exports.apiShareLr = functions
             }
             // Outside the 24-hour window → automatically fall back to the
             // approved template (with the LR PDF as document header).
+            let via = "direct";
             if (!r.ok && [131047, 131026].includes(r.code)) {
+              via = "template";
               r = await waSendTemplate(phoneId, token, num, mediaId ? "shipzy_lr_document" : "shipzy_shipment_update", {
                 mediaId, filename: pdfName,
                 bodyParams: mediaId
@@ -1037,6 +1072,13 @@ exports.apiShareLr = functions
             }
             if (r.ok) out.waSent++;
             else out.waErrors.push(`${num}: ${r.error}`.slice(0, 120));
+            await logComm({
+              type: "wa", to: num,
+              lr: String(tplParams.lr || "").slice(0, 40),
+              status: r.ok ? "sent" : "failed",
+              error: r.ok ? null : String(r.error || "").slice(0, 200),
+              via, pdf: !!mediaId,
+            });
           }
         }
       }
@@ -1117,6 +1159,7 @@ exports.apiIntegrations = functions
         const r = await sendSmtpMail({ icfg, to: [String(b.to || "")], cc: [],
           subject: "ShipzyCart test email ✅", text: "Email sending is configured correctly.",
           html: "<p>Email sending is configured correctly. — ShipzyCart</p>", attachment: null });
+        await logComm({ type: "email", to: [String(b.to || "")], cc: [], subject: "Test email", lr: "", status: r.ok ? "sent" : "failed", error: r.ok ? null : String(r.error || "").slice(0, 200), pdf: false });
         return res.json({ ok: true, data: r });
       }
 
@@ -1127,6 +1170,7 @@ exports.apiIntegrations = functions
         let num = String(b.to || "").replace(/\D/g, "");
         if (num.length === 10) num = "91" + num;
         const r = await waSendText(phoneId, token, num, "ShipzyCart test message ✅ — WhatsApp sending is configured correctly.");
+        await logComm({ type: "wa", to: num, lr: "", subject: "Test message", status: r.ok ? "sent" : "failed", error: r.ok ? null : String(r.error || "").slice(0, 200), via: "direct", pdf: false });
         return res.json({ ok: true, data: r });
       }
 
