@@ -926,10 +926,15 @@ exports.apiWaTemplates = functions
       if (!info.wabaId) return res.status(500).json({ ok: false, error: "WhatsApp Business Account ID not found automatically — paste your WABA ID in Settings → Integrations (WhatsApp section) and save" });
 
       if (req.method === "GET") {
-        const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/message_templates?fields=name,status,category,language&limit=50&access_token=${encodeURIComponent(token)}`);
+        const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/message_templates?fields=name,status,category,language,components,rejected_reason,quality_score&limit=100&access_token=${encodeURIComponent(token)}`);
         const j = await r.json().catch(() => ({}));
         if (j.error) return res.status(502).json({ ok: false, error: j.error.message });
-        return res.json({ ok: true, data: { wabaId: info.wabaId, templates: (j.data || []).map(t => ({ name: t.name, status: t.status, category: t.category, language: t.language })) } });
+        return res.json({ ok: true, data: { wabaId: info.wabaId, templates: (j.data || []).map(t => ({
+          name: t.name, status: t.status, category: t.category, language: t.language,
+          rejectedReason: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null,
+          quality: t.quality_score?.score || null,
+          components: (t.components || []).map(c => ({ type: c.type, format: c.format || null, text: c.text || null })),
+        })) } });
       }
 
       const b = req.body || {};

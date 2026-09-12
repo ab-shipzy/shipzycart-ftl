@@ -20,9 +20,18 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-82";
+const BUILD_VERSION = "v2026.05.11-83";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-83",
+    date:    "2026-09-12",
+    title:   "WA Templates tab — see exactly what Meta approved",
+    highlights: [
+      "New WA Templates tab (below Comms Log): FTL's three templates shown as WhatsApp-style green message previews — full body text with highlighted {{variables}}, document-header note for the LR PDF one, footer — plus each template's live Meta status badge (APPROVED / PENDING / REJECTED / PAUSED), category, language, and quality score.",
+      "Every template lists where the app uses it (Share LR fallback, vendor auto-notify). Rejections show Meta's reason. An amber banner flags FTL templates not yet requested, and the super-admin gets a one-click 'Request missing' button right there. 'Show entire account' toggle reveals every template on the shared WhatsApp account (other Shipzy apps included).",
+    ],
+  },
   {
     version: "v2026.05.11-82",
     date:    "2026-09-12",
@@ -5882,6 +5891,7 @@ export default function App() {
             />
           )}
           {route === "comms-log" && <CommsLog />}
+          {route === "wa-templates" && <WaTemplatesTab currentUser={currentUser} showToast={showToast} />}
           {route === "mail-inbox" && (
             <MailInbox shipments={shipments} persistShipments={persistShipments} showToast={showToast} currentUser={currentUser} />
           )}
@@ -7087,6 +7097,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, desktopCollapsed, onTog
     { k:"freight-calc",     label:"Freight Calculator", icon:Calculator },
     { k:"mail-inbox",       label:"Mail Inbox",       icon:Inbox },
     { k:"comms-log",        label:"Comms Log",        icon:Send },
+    { k:"wa-templates",     label:"WA Templates",     icon:FileText },
     { k:"ltl-rates",        label:"LTL Rates",        icon:PackageCheck },
     { k:"ewb-prep",         label:"E-Way Bill Prep",  icon:FileSpreadsheet },
     { k:"documents",        label:"Documents",        icon:FileText },
@@ -20118,6 +20129,135 @@ function _monthSpanLabel(from, to) {
 }
 
 
+
+/* ── WA Templates: FTL's WhatsApp templates with live Meta status ──
+   The WhatsApp Business Account is shared across Shipzy apps; this
+   tab shows the templates THIS app uses (with a toggle to view the
+   whole account), each with its full message text and approval
+   status straight from Meta. ── */
+const FTL_TEMPLATE_NAMES = ["shipzy_lr_document", "shipzy_shipment_update", "shipzy_vendor_pickup"];
+const FTL_TEMPLATE_USAGE = {
+  shipzy_lr_document:     "Share LR → new WhatsApp contact (outside 24h window) — LR PDF attached as document header",
+  shipzy_shipment_update: "Share LR text fallback → new contact when no PDF is available",
+  shipzy_vendor_pickup:   "Vendor auto-notify → vendor assigned on a shipment but hasn't chatted in 24h",
+};
+function WaTemplatesTab({ currentUser, showToast }) {
+  const [list, setList] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [note, setNote] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  const isSuper = currentUser?.role === "super-admin";
+
+  const load = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await callFtlApi("/apiWaTemplates", {});
+      setList((res && res.data && res.data.templates) || []);
+    } catch (e) { setErr(e.message || "Could not load templates"); setList([]); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const request = async () => {
+    setBusy(true); setNote(null);
+    try {
+      const res = await callFtlApi("/apiWaTemplates", { method: "POST", body: { action: "create-defaults" } });
+      const rs = (res && res.data && res.data.results) || [];
+      setNote(rs.map(r => `${r.name}: ${r.note}`).join(" · "));
+      showToast && showToast("Template request submitted to Meta");
+      await load();
+    } catch (e) { setNote(e.message || "Request failed"); }
+    finally { setBusy(false); }
+  };
+
+  const shown = (list || []).filter(t => showAll || FTL_TEMPLATE_NAMES.includes(t.name));
+  const missing = FTL_TEMPLATE_NAMES.filter(n => !(list || []).some(t => t.name === n));
+
+  const statusBadge = (t) => {
+    const map = {
+      APPROVED: "bg-emerald-100 text-emerald-700",
+      PENDING:  "bg-amber-100 text-amber-700",
+      IN_APPEAL:"bg-amber-100 text-amber-700",
+      REJECTED: "bg-rose-100 text-rose-600",
+      PAUSED:   "bg-slate-200 text-slate-600",
+      DISABLED: "bg-slate-200 text-slate-600",
+    };
+    return <span className={`px-2 py-0.5 rounded font-bold text-[9.5px] ${map[t.status] || "bg-slate-100 text-slate-500"}`}>{t.status || "?"}</span>;
+  };
+
+  const renderBody = (text) => {
+    const parts = String(text || "").split(/(\{\{\d+\}\})/g);
+    return parts.map((p, i) => /^\{\{\d+\}\}$/.test(p)
+      ? <span key={i} className="px-1 rounded bg-[#0074ff]/10 text-[#0074ff] font-mono text-[10px]">{p}</span>
+      : <span key={i}>{p}</span>);
+  };
+
+  return (
+    <div className="p-3 lg:p-5 pb-24 max-w-4xl">
+      <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+        <div>
+          <h2 className="text-[15px] font-bold text-[#00304a] flex items-center gap-2"><FileText className="w-4 h-4 text-[#25D366]" /> WhatsApp Templates</h2>
+          <p className="text-[11.5px] text-slate-500">Templates this app sends for new contacts — live status from Meta. The WhatsApp account is shared across Shipzy apps; this view shows FTL's own.</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="flex items-center gap-1.5 text-[10.5px] text-slate-500">
+            <input type="checkbox" checked={showAll} onChange={e=>setShowAll(e.target.checked)} className="accent-[#0074ff]" /> Show entire account
+          </label>
+          {isSuper && (
+            <button onClick={request} disabled={busy}
+              className="px-3 py-1.5 rounded bg-[#25D366] hover:bg-[#1faa52] text-white text-[11px] font-bold disabled:opacity-50">
+              {missing.length ? `Request ${missing.length} missing` : "Re-request templates"}
+            </button>
+          )}
+          <button onClick={load} disabled={busy}
+            className="px-3 py-1.5 rounded bg-[#00304a] hover:bg-[#0074ff] text-white text-[11.5px] font-semibold disabled:opacity-50 flex items-center gap-1.5">
+            <RefreshCw className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`} /> Refresh
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="mt-3 text-[11px] rounded px-3 py-2 bg-rose-50 border border-rose-200 text-rose-600">{err}</div>}
+      {note && <div className="mt-3 text-[11px] rounded px-3 py-2 bg-slate-50 border border-slate-200 text-slate-600">{note} — Meta review usually takes minutes to a few hours.</div>}
+      {!err && missing.length > 0 && list !== null && !showAll && (
+        <div className="mt-3 text-[11px] rounded px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700">
+          {missing.length} FTL template{missing.length > 1 ? "s" : ""} not yet requested: {missing.join(", ")}{isSuper ? " — use the green button above." : " — ask the super-admin to request them."}
+        </div>
+      )}
+
+      <div className="mt-4 space-y-3">
+        {list === null && <div className="text-[12px] text-slate-400">Loading templates…</div>}
+        {list !== null && shown.length === 0 && !err && <div className="text-[12px] text-slate-400 italic">No templates to show.</div>}
+        {shown.map(t => {
+          const header = (t.components || []).find(c => c.type === "HEADER");
+          const body   = (t.components || []).find(c => c.type === "BODY");
+          const footer = (t.components || []).find(c => c.type === "FOOTER");
+          return (
+            <div key={t.name + t.language} className="bg-white rounded-md border border-slate-200 p-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-mono font-bold text-[12.5px] text-[#00304a]">{t.name}</span>
+                {statusBadge(t)}
+                <span className="text-[10px] text-slate-400">{t.category?.toLowerCase()} · {t.language}</span>
+                {t.quality && <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">quality: {t.quality.toLowerCase()}</span>}
+              </div>
+              {FTL_TEMPLATE_USAGE[t.name] && (
+                <div className="mt-1 text-[10.5px] text-slate-500">Used by: {FTL_TEMPLATE_USAGE[t.name]}</div>
+              )}
+              {t.status === "REJECTED" && t.rejectedReason && (
+                <div className="mt-2 text-[10.5px] rounded px-2 py-1.5 bg-rose-50 border border-rose-100 text-rose-600">Rejection reason: {t.rejectedReason}</div>
+              )}
+              <div className="mt-2.5 rounded-lg bg-[#e7f6ee] border border-emerald-100 p-3 max-w-md">
+                {header && <div className="text-[10px] font-bold text-slate-500 mb-1.5">📎 {header.format === "DOCUMENT" ? "Document header (LR PDF goes here)" : header.text || header.format}</div>}
+                <div className="text-[11.5px] text-slate-700 whitespace-pre-wrap leading-relaxed">{renderBody(body?.text)}</div>
+                {footer && <div className="mt-1.5 text-[9.5px] text-slate-400">{footer.text}</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 /* ── Comms Log: every email + WhatsApp send, with real outcomes ──
    Backend records each attempt (per WhatsApp number) in its own
