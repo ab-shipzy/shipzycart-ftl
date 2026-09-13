@@ -973,6 +973,16 @@ exports.apiWaTemplates = functions
         return res.json({ ok: true, data: { results } });
       }
 
+      if (b.action === "phone-webhook-info") {
+        // Per-NUMBER webhook override beats WABA-level subscriptions — if the
+        // CRM set one, all traffic for the number goes only there.
+        const phoneId = icfg.waPhoneId || process.env.WA_PHONE_ID;
+        const r = await fetch(`https://graph.facebook.com/v20.0/${phoneId}?fields=webhook_configuration,display_phone_number&access_token=${encodeURIComponent(token)}`);
+        const j = await r.json().catch(() => ({}));
+        if (j.error) return res.json({ ok: true, data: { ok: false, error: j.error.message } });
+        return res.json({ ok: true, data: { ok: true, phone: j.display_phone_number || phoneId, webhookConfig: j.webhook_configuration || null } });
+      }
+
       if (b.action === "subscribe-app") {
         // Webhooks only deliver once the token's app is subscribed to the
         // WABA — the dashboard does NOT do this for pre-existing WABAs.

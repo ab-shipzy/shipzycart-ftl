@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-91";
+const BUILD_VERSION = "v2026.05.11-92";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-92",
+    date:    "2026-09-13",
+    title:   "Webhook override inspector",
+    highlights: [
+      "New 'Check number webhook override' button in the EWB Bot section: reveals whether the business number carries a phone-level webhook configuration — the one Meta setting that silently overrides every app-level subscription and explains 'verified + subscribed but nothing arrives'.",
+    ],
+  },
   {
     version: "v2026.05.11-91",
     date:    "2026-09-13",
@@ -21036,6 +21044,21 @@ function IntegrationsPanel({ showToast, currentUser }) {
             finally { setBusy(false); }
           }} disabled={busy}
             className="px-3 py-1.5 rounded bg-[#0074ff] text-white text-[10.5px] font-bold disabled:opacity-50">Connect webhook (subscribe app to WABA)</button>
+          <button onClick={async () => {
+            setBusy(true); setNote(null);
+            try {
+              const res = await callFtlApi("/apiWaTemplates", { method: "POST", body: { action: "phone-webhook-info" } });
+              const d = (res && res.data) || {};
+              if (!d.ok) setNote({ kind: "err", msg: d.error || "Check failed" });
+              else if (d.webhookConfig && (d.webhookConfig.application || d.webhookConfig.whatsapp_business_account)) {
+                setNote({ kind: "err", msg: `⚠️ Number ${d.phone} has a PHONE-LEVEL webhook override: ${JSON.stringify(d.webhookConfig)} — this bypasses app subscriptions; all messages go only to that URL.` });
+              } else {
+                setNote({ kind: "ok", msg: `No phone-level override on ${d.phone} — WABA-level subscriptions apply. Config: ${JSON.stringify(d.webhookConfig)}` });
+              }
+            } catch (e) { setNote({ kind: "err", msg: e.message || "Check failed" }); }
+            finally { setBusy(false); }
+          }} disabled={busy}
+            className="ml-2 px-3 py-1.5 rounded border border-slate-300 text-[10.5px] font-bold text-slate-600 disabled:opacity-50">Check number webhook override</button>
         </div>
         <button onClick={() => test("wa")} disabled={busy} className="text-[11px] font-bold text-[#25D366] disabled:opacity-50">Send test WhatsApp →</button>
 
