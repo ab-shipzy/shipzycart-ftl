@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-89";
+const BUILD_VERSION = "v2026.05.11-90";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-90",
+    date:    "2026-09-13",
+    title:   "EWB Bot webhook connector",
+    highlights: [
+      "One-click 'Connect webhook (subscribe app to WABA)' button in Settings → Integrations → EWB Bot: performs the Meta subscription step the dashboard silently skips for pre-existing WhatsApp accounts — without it, verified webhooks receive nothing. Shows the list of subscribed apps as confirmation.",
+    ],
+  },
   {
     version: "v2026.05.11-89",
     date:    "2026-09-13",
@@ -21008,6 +21016,16 @@ function IntegrationsPanel({ showToast, currentUser }) {
             <Field label={<span>Webhook verify token <M k="waVerifyToken" /></span>}><input value={form.waVerifyToken} onChange={e=>set("waVerifyToken",e.target.value)} placeholder="shipzyftl (default)" className={inputCls + " font-mono"} /></Field>
           </div>
           <div className="text-[10px] text-slate-400 break-all">Webhook URL for Meta / CRM forwarding: <span className="font-mono text-slate-500">https://us-central1-shipzycart-ftl.cloudfunctions.net/waWebhook</span></div>
+          <button onClick={async () => {
+            setBusy(true); setNote(null);
+            try {
+              const res = await callFtlApi("/apiWaTemplates", { method: "POST", body: { action: "subscribe-app" } });
+              const d = (res && res.data) || {};
+              setNote(d.ok ? `✅ App subscribed to the WhatsApp account. Subscribed apps: ${(d.apps || []).join(", ") || "—"}` : `Subscribe failed: ${d.error || "unknown"}`);
+            } catch (e) { setNote(e.message || "Subscribe failed"); }
+            finally { setBusy(false); }
+          }} disabled={busy}
+            className="px-3 py-1.5 rounded bg-[#0074ff] text-white text-[10.5px] font-bold disabled:opacity-50">Connect webhook (subscribe app to WABA)</button>
         </div>
         <button onClick={() => test("wa")} disabled={busy} className="text-[11px] font-bold text-[#25D366] disabled:opacity-50">Send test WhatsApp →</button>
 
