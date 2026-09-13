@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-92";
+const BUILD_VERSION = "v2026.05.11-93";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-93",
+    date:    "2026-09-13",
+    title:   "Remove phone-level webhook override",
+    highlights: [
+      "New 'Remove override' button beside the inspector: clears the number-level callback (set inadvertently by Meta's guided setup) so WABA-level subscriptions take effect — both the CRM app and shipzy-ftl then receive every message in parallel.",
+    ],
+  },
   {
     version: "v2026.05.11-92",
     date:    "2026-09-13",
@@ -21059,6 +21067,19 @@ function IntegrationsPanel({ showToast, currentUser }) {
             finally { setBusy(false); }
           }} disabled={busy}
             className="ml-2 px-3 py-1.5 rounded border border-slate-300 text-[10.5px] font-bold text-slate-600 disabled:opacity-50">Check number webhook override</button>
+          <button onClick={async () => {
+            if (!confirm("Remove the phone-level webhook override? After this, ALL subscribed apps (CRM + FTL) receive messages via WABA-level subscriptions.")) return;
+            setBusy(true); setNote(null);
+            try {
+              const res = await callFtlApi("/apiWaTemplates", { method: "POST", body: { action: "clear-phone-webhook" } });
+              const d = (res && res.data) || {};
+              setNote(d.ok
+                ? { kind: "ok", msg: `✅ Phone-level override removed. Current config: ${JSON.stringify(d.webhookConfig)} — messages now flow to all subscribed apps.` }
+                : { kind: "err", msg: `Remove failed: ${d.error || "unknown"}` });
+            } catch (e) { setNote({ kind: "err", msg: e.message || "Remove failed" }); }
+            finally { setBusy(false); }
+          }} disabled={busy}
+            className="ml-2 px-3 py-1.5 rounded border border-rose-300 text-[10.5px] font-bold text-rose-500 disabled:opacity-50">Remove override (restore CRM + FTL)</button>
         </div>
         <button onClick={() => test("wa")} disabled={busy} className="text-[11px] font-bold text-[#25D366] disabled:opacity-50">Send test WhatsApp →</button>
 
