@@ -983,6 +983,15 @@ exports.apiWaTemplates = functions
         return res.json({ ok: true, data: { ok: true, phone: j.display_phone_number || phoneId, webhookConfig: j.webhook_configuration || null } });
       }
 
+      if (b.action === "waba-numbers") {
+        // Which phone numbers actually live under the saved WABA?
+        const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/phone_numbers?fields=display_phone_number,id,verified_name&access_token=${encodeURIComponent(token)}`);
+        const j = await r.json().catch(() => ({}));
+        if (j.error) return res.json({ ok: true, data: { ok: false, error: j.error.message } });
+        return res.json({ ok: true, data: { ok: true, wabaId: info.wabaId,
+          numbers: (j.data || []).map(n => ({ phone: n.display_phone_number, id: n.id, name: n.verified_name })) } });
+      }
+
       if (b.action === "clear-phone-webhook") {
         // Remove the phone-level override so WABA-level subscriptions apply
         // (all subscribed apps — CRM + FTL — then receive messages).

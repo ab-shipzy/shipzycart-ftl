@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-93";
+const BUILD_VERSION = "v2026.05.11-94";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-94",
+    date:    "2026-09-13",
+    title:   "WABA numbers lister",
+    highlights: [
+      "'List WABA numbers' button in the EWB Bot section shows which phone numbers actually live under the saved WhatsApp Business Account ID — instantly exposing a wrong-WABA subscription (the one case where Meta's Test succeeds but real messages never arrive).",
+    ],
+  },
   {
     version: "v2026.05.11-93",
     date:    "2026-09-13",
@@ -21080,6 +21088,18 @@ function IntegrationsPanel({ showToast, currentUser }) {
             finally { setBusy(false); }
           }} disabled={busy}
             className="ml-2 px-3 py-1.5 rounded border border-rose-300 text-[10.5px] font-bold text-rose-500 disabled:opacity-50">Remove override (restore CRM + FTL)</button>
+          <button onClick={async () => {
+            setBusy(true); setNote(null);
+            try {
+              const res = await callFtlApi("/apiWaTemplates", { method: "POST", body: { action: "waba-numbers" } });
+              const d = (res && res.data) || {};
+              if (!d.ok) setNote({ kind: "err", msg: d.error || "Check failed" });
+              else setNote({ kind: (d.numbers || []).length ? "ok" : "err",
+                msg: `WABA ${d.wabaId} contains: ${(d.numbers || []).map(n => `${n.phone} (id ...${String(n.id).slice(-4)})`).join(" · ") || "NO NUMBERS — wrong WABA saved!"}` });
+            } catch (e) { setNote({ kind: "err", msg: e.message || "Check failed" }); }
+            finally { setBusy(false); }
+          }} disabled={busy}
+            className="ml-2 px-3 py-1.5 rounded border border-slate-300 text-[10.5px] font-bold text-slate-600 disabled:opacity-50">List WABA numbers</button>
         </div>
         <button onClick={() => test("wa")} disabled={busy} className="text-[11px] font-bold text-[#25D366] disabled:opacity-50">Send test WhatsApp →</button>
 
