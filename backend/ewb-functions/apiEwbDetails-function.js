@@ -1096,19 +1096,24 @@ async function updateShipmentByLr(lrNumber, mutate) {
   const wsRefs = await db.collection("workspaces").listDocuments();
   const target = String(lrNumber).trim().toLowerCase();
   for (const ws of wsRefs) {
-    const ref = ws.collection("state").doc("shipzy_shipments_v4");
-    const doc = await ref.get();
-    if (!doc.exists) continue;
-    let arr;
-    try { arr = JSON.parse(doc.data().value || "[]"); } catch { continue; }
-    if (!Array.isArray(arr)) continue;
-    const idx = arr.findIndex(s => s && !s.deletedAt &&
-      (String(s.lrNumber || "").toLowerCase() === target || String(s.awb || "").toLowerCase() === target));
-    if (idx === -1) continue;
-    const updated = mutate(arr[idx]);
-    arr[idx] = updated;
-    await ref.set({ value: JSON.stringify(arr) }, { merge: true });
-    return updated;
+    // Storage keys map to doc ids (colons → underscores), and TEST MODE
+    // suffixes keys with :TEST — so scan every shipments-doc variant
+    // (shipzy_shipments_v4, shipzy_shipments_v4_TEST, future versions).
+    const stateDocs = await ws.collection("state").listDocuments();
+    for (const ref of stateDocs.filter(r => r.id.startsWith("shipzy_shipments"))) {
+      const doc = await ref.get();
+      if (!doc.exists) continue;
+      let arr;
+      try { arr = JSON.parse(doc.data().value || "[]"); } catch { continue; }
+      if (!Array.isArray(arr)) continue;
+      const idx = arr.findIndex(s => s && !s.deletedAt &&
+        (String(s.lrNumber || "").toLowerCase() === target || String(s.awb || "").toLowerCase() === target));
+      if (idx === -1) continue;
+      const updated = mutate(arr[idx]);
+      arr[idx] = updated;
+      await ref.set({ value: JSON.stringify(arr) }, { merge: true });
+      return updated;
+    }
   }
   return null;
 }
