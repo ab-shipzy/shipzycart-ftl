@@ -10,3 +10,4 @@ exports.apiWaTemplates = require("./apiEwbDetails-function").apiWaTemplates;
 exports.apiCommsLog = require("./apiEwbDetails-function").apiCommsLog;
 exports.scheduledInboxSync = require("./apiEwbDetails-function").scheduledInboxSync;
 exports.scheduledTemplatesSync = require("./apiEwbDetails-function").scheduledTemplatesSync;
+exports.waWebhook = require("./apiEwbDetails-function").waWebhook;

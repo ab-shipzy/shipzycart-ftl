@@ -1004,6 +1004,274 @@ exports.apiCommsLog = functions
     }
   });
 
+
+/* ══════════════════════════════════════════════════════════════
+   WhatsApp EWB Bot — reply "EWB <12-digit> LR-YYYY-NNNN" to the
+   business number → the app fetches the e-way bill, FINALIZES the
+   LR (invoice, value, vehicle, validity, parties written onto the
+   shipment), and replies with the Final LR PDF.
+   Only numbers whitelisted in Settings → Integrations may use it.
+   ══════════════════════════════════════════════════════════════ */
+
+async function fetchEwbRaw(ewbNo) {
+  const c = await cfg();
+  await getWbToken(c);
+  const host = WB_HOSTS[c.env] || WB_HOSTS.sandbox;
+  const resp = await httpsJson({
+    host,
+    path: `${process.env.WB_PATH_PREFIX || ""}/ewaybillapi/v1.03/ewayapi/getewaybill?email=${encodeURIComponent(c.email)}&ewbNo=${ewbNo}`,
+    method: "GET",
+    headers: {
+      "ip_address": c.ip, "client_id": c.client_id,
+      "client_secret": c.client_secret, "gstin": c.gstin,
+      "Accept": "application/json",
+    },
+  });
+  const j = resp.json || {};
+  const codes = j?.errorCodes || j?.data?.errorCodes;
+  const failed = resp.status !== 200 || j.status_cd === "0" || j.status === "0" || j.error || codes;
+  if (failed) {
+    const msg = nicMessage(codes) || j?.error?.message || j?.status_desc || `EWB lookup failed (HTTP ${resp.status})`;
+    throw new Error(String(msg).slice(0, 200));
+  }
+  return j.data ?? j;
+}
+
+/* Find the shipment by LR across workspaces; apply the mutation; save. */
+async function updateShipmentByLr(lrNumber, mutate) {
+  const db = admin.firestore();
+  const wsSnap = await db.collection("workspaces").get();
+  const target = String(lrNumber).trim().toLowerCase();
+  for (const ws of wsSnap.docs) {
+    const ref = db.collection("workspaces").doc(ws.id).collection("state").doc("shipzy_shipments_v4");
+    const doc = await ref.get();
+    if (!doc.exists) continue;
+    let arr;
+    try { arr = JSON.parse(doc.data().value || "[]"); } catch { continue; }
+    if (!Array.isArray(arr)) continue;
+    const idx = arr.findIndex(s => s && !s.deletedAt &&
+      (String(s.lrNumber || "").toLowerCase() === target || String(s.awb || "").toLowerCase() === target));
+    if (idx === -1) continue;
+    const updated = mutate(arr[idx]);
+    arr[idx] = updated;
+    await ref.set({ value: JSON.stringify(arr) }, { merge: true });
+    return updated;
+  }
+  return null;
+}
+
+/* Server-side FINAL LR document (A4, print-ready) from shipment + EWB. */
+function finalLrHtml(s, ewb) {
+  const e = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const money = (v) => "₹" + Number(v || 0).toLocaleString("en-IN");
+  const items = Array.isArray(ewb.itemList) ? ewb.itemList : [];
+  const vehicles = Array.isArray(ewb.VehiclListDetails) ? ewb.VehiclListDetails : (Array.isArray(ewb.vehicleListDetails) ? ewb.vehicleListDetails : []);
+  const lastVeh = vehicles.length ? vehicles[vehicles.length - 1] : {};
+  const itemRows = items.slice(0, 12).map(it => `<tr>
+      <td>${e(it.productName || it.productDesc || "—")}</td>
+      <td>${e(it.hsnCode || "—")}</td>
+      <td style="text-align:right">${e(it.quantity ?? "—")} ${e(it.qtyUnit || "")}</td>
+      <td style="text-align:right">${money(it.taxableAmount)}</td>
+    </tr>`).join("");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Final LR ${e(s.lrNumber)}</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; color: #111; margin: 24px; font-size: 12px; }
+    .head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #00304a; padding-bottom: 10px; }
+    .brand { font-size: 22px; font-weight: 800; color: #00304a; }
+    .brand span { color: #0074ff; }
+    .final { display: inline-block; background: #10b981; color: #fff; font-weight: 800; font-size: 11px; padding: 3px 10px; border-radius: 4px; letter-spacing: 1px; }
+    .lrno { font-size: 18px; font-weight: 800; color: #00304a; }
+    table.grid { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    table.grid td, table.grid th { border: 1px solid #cbd5e1; padding: 6px 8px; vertical-align: top; }
+    th { background: #f1f5f9; text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; color: #475569; }
+    .lbl { font-size: 9.5px; text-transform: uppercase; letter-spacing: .5px; color: #64748b; font-weight: 700; }
+    .big { font-size: 13px; font-weight: 700; color: #00304a; }
+    .foot { margin-top: 18px; display: flex; justify-content: space-between; font-size: 10px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 8px; }
+  </style></head><body>
+  <div class="head">
+    <div>
+      <div class="brand">SHIPZY <span>LOGISTICS</span></div>
+      <div style="font-size:10.5px;color:#475569;margin-top:2px">Transporter ID: ${e(SHIPZY_TRANSPORTER.id)} · ${e(SHIPZY_TRANSPORTER.name)}</div>
+    </div>
+    <div style="text-align:right">
+      <div class="final">FINAL LR</div>
+      <div class="lrno" style="margin-top:6px">${e(s.lrNumber || s.awb)}</div>
+      <div style="font-size:10.5px;color:#475569">AWB: ${e(s.awb || "—")} · Date: ${e(s.lrDate || "")}</div>
+    </div>
+  </div>
+
+  <table class="grid"><tr>
+    <td style="width:50%">
+      <div class="lbl">Consignor (From)</div>
+      <div class="big">${e(ewb.fromTrdName || "—")}</div>
+      <div>${e([ewb.fromAddr1, ewb.fromAddr2].filter(Boolean).join(", "))}</div>
+      <div>${e([ewb.fromPlace, ewb.fromPincode].filter(Boolean).join(" – "))}</div>
+      <div>GSTIN: ${e(ewb.fromGstin || "—")}</div>
+    </td>
+    <td>
+      <div class="lbl">Consignee (To)</div>
+      <div class="big">${e(ewb.toTrdName || "—")}</div>
+      <div>${e([ewb.toAddr1, ewb.toAddr2].filter(Boolean).join(", "))}</div>
+      <div>${e([ewb.toPlace, ewb.toPincode].filter(Boolean).join(" – "))}</div>
+      <div>GSTIN: ${e(ewb.toGstin || "—")}</div>
+    </td>
+  </tr></table>
+
+  <table class="grid"><tr>
+    <td><div class="lbl">E-Way Bill No.</div><div class="big">${e(ewb.ewbNo)}</div></td>
+    <td><div class="lbl">EWB Date</div><div>${e(ewb.ewayBillDate || ewb.ewbDate || "—")}</div></td>
+    <td><div class="lbl">Valid Upto</div><div class="big">${e(ewb.validUpto || "—")}</div></td>
+    <td><div class="lbl">Invoice</div><div>${e(ewb.docNo || "—")} · ${e(ewb.docDate || "")}</div></td>
+    <td><div class="lbl">Invoice Value</div><div class="big">${money(ewb.totInvValue || ewb.totalValue)}</div></td>
+  </tr></table>
+
+  <table class="grid"><tr>
+    <td><div class="lbl">Vehicle</div><div class="big">${e(lastVeh.vehicleNo || s.vehicleNumber || "—")}</div></td>
+    <td><div class="lbl">From (Part-B)</div><div>${e(lastVeh.fromPlace || "—")}</div></td>
+    <td><div class="lbl">Driver</div><div>${e([s.driverName, s.driverNumber].filter(Boolean).join(" · ") || "—")}</div></td>
+    <td><div class="lbl">Distance</div><div>${e(ewb.actualDist ?? ewb.transDistance ?? "—")} km</div></td>
+  </tr></table>
+
+  ${itemRows ? `<table class="grid" style="margin-top:12px">
+    <tr><th>Goods description</th><th style="width:80px">HSN</th><th style="width:90px;text-align:right">Qty</th><th style="width:110px;text-align:right">Taxable value</th></tr>
+    ${itemRows}
+  </table>` : ""}
+
+  <div class="foot">
+    <div>Finalized from E-Way Bill ${e(ewb.ewbNo)} via ShipzyCart · ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}</div>
+    <div>Subject to Bengaluru jurisdiction · This is a system-generated document</div>
+  </div>
+  </body></html>`;
+}
+
+const SHIPZY_TRANSPORTER = { id: "29AEOFS3685R1ZO", name: "Shipzy Logistics" };
+
+exports.waWebhook = functions
+  .region("us-central1")
+  .runWith({ timeoutSeconds: 300, memory: "1GB" })
+  .https.onRequest(async (req, res) => {
+    // ── Meta webhook verification handshake ──
+    if (req.method === "GET") {
+      const icfg = await getIntegrations().catch(() => ({}));
+      const expect = icfg.waVerifyToken || "shipzyftl";
+      if (req.query["hub.mode"] === "subscribe" && req.query["hub.verify_token"] === expect) {
+        return res.status(200).send(req.query["hub.challenge"] || "");
+      }
+      return res.status(403).send("verify failed");
+    }
+    if (req.method !== "POST") return res.status(405).send("POST only");
+
+    // Always 200 quickly-ish so Meta doesn't retry-storm; we process inline
+    // (function timeout is generous) and errors are replied on WhatsApp.
+    try {
+      const icfg = await getIntegrations();
+      const phoneId = icfg.waPhoneId || process.env.WA_PHONE_ID;
+      const token   = icfg.waToken   || process.env.WA_TOKEN;
+
+      const allowed = String(icfg.waInboundNumbers || "9035013725")
+        .split(/[,;\s]+/).map(x => x.replace(/\D/g, "")).filter(Boolean)
+        .map(x => x.length === 10 ? "91" + x : x);
+
+      const entries = (req.body && req.body.entry) || [];
+      for (const entry of entries) {
+        for (const ch of entry.changes || []) {
+          const val = ch.value || {};
+          for (const msg of val.messages || []) {
+            const from = String(msg.from || "").replace(/\D/g, "");
+            const msgId = String(msg.id || "");
+            const text = (msg.text && msg.text.body) || (msg.document && msg.document.caption) || (msg.image && msg.image.caption) || "";
+            if (!msgId || !from) continue;
+
+            // Dedup (Meta retries deliveries)
+            const seenRef = admin.firestore().collection("waProcessed").doc(msgId.replace(/[^\w-]/g, "_").slice(0, 400));
+            const seen = await seenRef.get();
+            if (seen.exists) continue;
+            await seenRef.set({ at: Date.now(), from });
+
+            if (!allowed.includes(from)) continue; // silently ignore strangers
+
+            const reply = (body) => waSendText(phoneId, token, from, body);
+
+            const ewbMatch = String(text).match(/\b(\d{12})\b/);
+            const lrMatch  = String(text).match(/\b(LR[-\s]?\d{4}[-\s]?\d{3,6})\b/i);
+            if (!ewbMatch || !lrMatch) {
+              await reply("🤖 ShipzyCart EWB Bot\n\nSend both together, e.g.:\n\nEWB 171234567890 LR-2026-0142\n\nI'll fetch the e-way bill, finalize that LR and send you the Final LR PDF.");
+              continue;
+            }
+            const ewbNo = ewbMatch[1];
+            const lrNo  = lrMatch[1].toUpperCase().replace(/\s+/g, "-").replace(/LR-?/, "LR-");
+
+            await logComm({ type: "wa", to: from, lr: lrNo, subject: "EWB bot request", status: "sent", via: "inbound", pdf: false, context: "ewb-bot-in" });
+
+            let ewb;
+            try { ewb = await fetchEwbRaw(ewbNo); }
+            catch (err) {
+              await reply(`❌ Could not fetch EWB ${ewbNo}:\n${err.message}`);
+              continue;
+            }
+
+            const vehicles = Array.isArray(ewb.VehiclListDetails) ? ewb.VehiclListDetails : (Array.isArray(ewb.vehicleListDetails) ? ewb.vehicleListDetails : []);
+            const lastVeh = vehicles.length ? vehicles[vehicles.length - 1] : {};
+
+            const updated = await updateShipmentByLr(lrNo, (s) => {
+              const inv = {
+                invoiceNo: ewb.docNo || "", invoiceValue: Number(ewb.totInvValue || ewb.totalValue || 0),
+                ewayBillNo: String(ewbNo), ewbValidUpto: ewb.validUpto || "",
+              };
+              let invoices = Array.isArray(s.invoices) ? [...s.invoices] : [];
+              const byNo = invoices.findIndex(i => String(i.ewayBillNo || "").replace(/\D/g, "") === ewbNo ||
+                (ewb.docNo && String(i.invoiceNo || "").trim().toLowerCase() === String(ewb.docNo).trim().toLowerCase()));
+              if (byNo >= 0) invoices[byNo] = { ...invoices[byNo], ...inv };
+              else if (invoices.length && !invoices[0].ewayBillNo) invoices[0] = { ...invoices[0], ...inv };
+              else invoices.push(inv);
+              return {
+                ...s, invoices,
+                ewayBillNo: s.ewayBillNo || String(ewbNo),
+                vehicleNumber: lastVeh.vehicleNo || s.vehicleNumber || "",
+                ewbFinal: {
+                  ewbNo: String(ewbNo), at: new Date().toISOString(), by: `wa:${from}`,
+                  fromTrdName: ewb.fromTrdName || "", toTrdName: ewb.toTrdName || "",
+                  fromGstin: ewb.fromGstin || "", toGstin: ewb.toGstin || "",
+                  validUpto: ewb.validUpto || "", docNo: ewb.docNo || "", docDate: ewb.docDate || "",
+                  totInvValue: Number(ewb.totInvValue || ewb.totalValue || 0),
+                },
+                remarks: [(s.remarks || ""), `Finalized via EWB ${ewbNo} (WhatsApp bot)`].filter(Boolean).join(" | ").slice(0, 500),
+                audit: [...(Array.isArray(s.audit) ? s.audit : []), {
+                  at: new Date().toISOString(), by: "EWB Bot", byMobile: from,
+                  action: "ewb-finalize", detail: { ewbNo, docNo: ewb.docNo || "", validUpto: ewb.validUpto || "" },
+                }],
+              };
+            });
+
+            if (!updated) {
+              await reply(`❌ No shipment found with LR "${lrNo}". Check the LR number and try again.`);
+              continue;
+            }
+
+            // Final LR PDF → WhatsApp document
+            let sentPdf = false;
+            try {
+              const pdf = await renderPdfFromHtml(finalLrHtml(updated, ewb));
+              const fname = `FINAL-${lrNo}.pdf`;
+              const mediaId = await waUploadMedia(phoneId, token, pdf, fname);
+              const cap = `✅ *${lrNo} FINALIZED*\n\nEWB: ${ewbNo}\nInvoice: ${ewb.docNo || "—"} · ₹${Number(ewb.totInvValue || 0).toLocaleString("en-IN")}\nVehicle: ${lastVeh.vehicleNo || updated.vehicleNumber || "—"}\nValid till: ${ewb.validUpto || "—"}\nFrom: ${ewb.fromTrdName || "—"}\nTo: ${ewb.toTrdName || "—"}`;
+              const r = await waSendDocument(phoneId, token, from, mediaId, fname, cap);
+              sentPdf = r.ok;
+              if (!r.ok) await reply(cap + "\n\n(PDF could not be attached: " + (r.error || "error") + ")");
+            } catch (err) {
+              await reply(`✅ ${lrNo} finalized with EWB ${ewbNo}, but the PDF failed: ${err.message}`);
+            }
+            await logComm({ type: "wa", to: from, lr: lrNo, status: "sent", via: "direct", pdf: sentPdf, context: "ewb-bot-final" });
+          }
+        }
+      }
+      return res.status(200).send("ok");
+    } catch (e) {
+      console.warn("waWebhook:", e.message);
+      return res.status(200).send("ok"); // never make Meta retry-storm
+    }
+  });
+
 exports.apiShareLr = functions
   .region("us-central1")
   .runWith({ timeoutSeconds: 300, memory: "1GB" })
@@ -1161,6 +1429,7 @@ exports.apiIntegrations = functions
           mailFrom: c.mailFrom || "",
           waPhoneId: _mask(c.waPhoneId), waToken: _mask(c.waToken),
           waWabaId: c.waWabaId || "",
+          waInboundNumbers: c.waInboundNumbers || "", waVerifyToken: c.waVerifyToken || "",
           imapUser: c.imapUser || "", imapPass: _mask(c.imapPass),
           wbEmail: c.wbEmail || "", wbUsername: c.wbUsername || "",
           wbPassword: _mask(c.wbPassword), wbClientId: _mask(c.wbClientId),
@@ -1171,7 +1440,7 @@ exports.apiIntegrations = functions
 
       const b = req.body || {};
       if (b.action === "save") {
-        const allowed = ["smtpHost","smtpPort","smtpUser","smtpPass","mailFrom","waPhoneId","waToken","waWabaId","imapUser","imapPass",
+        const allowed = ["smtpHost","smtpPort","smtpUser","smtpPass","mailFrom","waPhoneId","waToken","waWabaId","waInboundNumbers","waVerifyToken","imapUser","imapPass",
                          "wbEmail","wbUsername","wbPassword","wbClientId","wbClientSecret","wbGstin","wbEnv","wbIp"];
         const patch = {};
         allowed.forEach(k => {

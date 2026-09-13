@@ -20,9 +20,19 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-88";
+const BUILD_VERSION = "v2026.05.11-89";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-89",
+    date:    "2026-09-13",
+    title:   "WhatsApp EWB Bot — reply with EWB + LR, get the Final LR back",
+    highlights: [
+      "New inbound automation: a whitelisted number WhatsApps 'EWB 171234567890 LR-2026-0142' to the business number → the backend fetches that e-way bill from the portal, FINALIZES the LR (invoice no & value, vehicle from Part-B, validity, consignor/consignee written onto the shipment, audit-trailed as 'ewb-finalize'), renders a branded FINAL LR PDF server-side, and replies to the sender with the PDF + summary — all hands-free.",
+      "Draft vs Final is now a real distinction: the booking-time LR is the draft; the EWB-enriched document (green FINAL LR badge, party GSTINs, goods table, Part-B vehicle, valid-upto) is the final. Bad inputs get helpful replies (format hint, LR not found, EWB fetch errors). Everything logs in the Comms Log (contexts: ewb-bot-in / ewb-bot-final).",
+      "Setup in Settings → Integrations → WhatsApp: allowed sender numbers (default 9035013725) and webhook verify token, with the webhook URL shown. Note: if the WhatsApp CRM already receives this number's webhooks, forward events from the CRM to this URL instead of repointing Meta (repointing would disconnect the CRM).",
+    ],
+  },
   {
     version: "v2026.05.11-88",
     date:    "2026-09-12",
@@ -20898,7 +20908,7 @@ function MailInbox({ shipments, persistShipments, showToast, currentUser }) {
    in the shared app state, so ordinary users can't read secrets. ── */
 function IntegrationsPanel({ showToast, currentUser }) {
   const empty = { smtpHost: "", smtpPort: "", smtpUser: "", smtpPass: "", mailFrom: "", waPhoneId: "", waToken: "", imapUser: "", imapPass: "",
-    wbEmail: "", wbUsername: "", wbPassword: "", wbClientId: "", wbClientSecret: "", wbGstin: "", wbEnv: "", wbIp: "", waWabaId: "" };
+    wbEmail: "", wbUsername: "", wbPassword: "", wbClientId: "", wbClientSecret: "", wbGstin: "", wbEnv: "", wbIp: "", waWabaId: "", waInboundNumbers: "", waVerifyToken: "" };
   const [form, setForm] = useState(empty);
   const [masked, setMasked] = useState({});
   const [busy, setBusy] = useState(false);
@@ -20988,6 +20998,16 @@ function IntegrationsPanel({ showToast, currentUser }) {
           <Field label={<span>Phone Number ID <M k="waPhoneId" /></span>}><input value={form.waPhoneId} onChange={e=>set("waPhoneId",e.target.value)} className={inputCls + " font-mono"} /></Field>
           <Field label={<span>Access Token <M k="waToken" /></span>}><input type="password" value={form.waToken} onChange={e=>set("waToken",e.target.value)} className={inputCls + " font-mono"} /></Field>
           <Field label={<span>WABA ID (Business Account ID) <M k="waWabaId" /></span>}><input value={form.waWabaId} onChange={e=>set("waWabaId",e.target.value)} placeholder="Business settings → WhatsApp accounts → ID" className={inputCls + " font-mono"} /></Field>
+        </div>
+
+        <div className="pt-2 mt-2 border-t border-slate-100 space-y-2">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">EWB Bot (incoming WhatsApp)</div>
+          <div className="text-[10.5px] text-slate-400">Whitelisted numbers can WhatsApp "EWB 171234567890 LR-2026-0142" to the business number — the app fetches the e-way bill, finalizes that LR and replies with the Final LR PDF.</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <Field label={<span>Allowed sender numbers <M k="waInboundNumbers" /></span>}><input value={form.waInboundNumbers} onChange={e=>set("waInboundNumbers",e.target.value)} placeholder="9035013725, 98…  (comma-separated)" className={inputCls + " font-mono"} /></Field>
+            <Field label={<span>Webhook verify token <M k="waVerifyToken" /></span>}><input value={form.waVerifyToken} onChange={e=>set("waVerifyToken",e.target.value)} placeholder="shipzyftl (default)" className={inputCls + " font-mono"} /></Field>
+          </div>
+          <div className="text-[10px] text-slate-400 break-all">Webhook URL for Meta / CRM forwarding: <span className="font-mono text-slate-500">https://us-central1-shipzycart-ftl.cloudfunctions.net/waWebhook</span></div>
         </div>
         <button onClick={() => test("wa")} disabled={busy} className="text-[11px] font-bold text-[#25D366] disabled:opacity-50">Send test WhatsApp →</button>
 
