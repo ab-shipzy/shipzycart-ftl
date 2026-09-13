@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-90";
+const BUILD_VERSION = "v2026.05.11-91";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-91",
+    date:    "2026-09-13",
+    title:   "Connect-webhook button now reports properly",
+    highlights: [
+      "The subscribe result was rendered in the wrong shape — an empty red box regardless of outcome. It now shows a readable green success (with the subscribed-apps list) or a red failure with Meta's actual reason and the current subscription list.",
+    ],
+  },
   {
     version: "v2026.05.11-90",
     date:    "2026-09-13",
@@ -21021,8 +21029,10 @@ function IntegrationsPanel({ showToast, currentUser }) {
             try {
               const res = await callFtlApi("/apiWaTemplates", { method: "POST", body: { action: "subscribe-app" } });
               const d = (res && res.data) || {};
-              setNote(d.ok ? `✅ App subscribed to the WhatsApp account. Subscribed apps: ${(d.apps || []).join(", ") || "—"}` : `Subscribe failed: ${d.error || "unknown"}`);
-            } catch (e) { setNote(e.message || "Subscribe failed"); }
+              setNote(d.ok
+                ? { kind: "ok",  msg: `✅ App subscribed to the WhatsApp account. Subscribed apps: ${(d.apps || []).join(", ") || "—"}` }
+                : { kind: "err", msg: `Subscribe failed: ${d.error || "unknown"} · Subscribed apps right now: ${(d.apps || []).join(", ") || "none"}` });
+            } catch (e) { setNote({ kind: "err", msg: e.message || "Subscribe failed" }); }
             finally { setBusy(false); }
           }} disabled={busy}
             className="px-3 py-1.5 rounded bg-[#0074ff] text-white text-[10.5px] font-bold disabled:opacity-50">Connect webhook (subscribe app to WABA)</button>
