@@ -1090,7 +1090,8 @@ async function fetchEwbRaw(ewbNo) {
 }
 
 /* Find the shipment by LR across workspaces; apply the mutation; save. */
-async function updateShipmentByLr(lrNumber, mutate) {
+async function updateShipmentByLr(lrNumber, mutate, opts = {}) {
+  const wantTest = !!opts.testOnly;
   const db = admin.firestore();
   // listDocuments() — workspace parents are virtual docs; .get() misses them.
   const wsRefs = await db.collection("workspaces").listDocuments();
@@ -1100,7 +1101,9 @@ async function updateShipmentByLr(lrNumber, mutate) {
     // suffixes keys with :TEST — so scan every shipments-doc variant
     // (shipzy_shipments_v4, shipzy_shipments_v4_TEST, future versions).
     const stateDocs = await ws.collection("state").listDocuments();
-    for (const ref of stateDocs.filter(r => r.id.startsWith("shipzy_shipments"))) {
+    const pool = stateDocs.filter(r => r.id.startsWith("shipzy_shipments") &&
+      (wantTest ? r.id.endsWith("_TEST") : !r.id.endsWith("_TEST")));
+    for (const ref of pool) {
       const doc = await ref.get();
       if (!doc.exists) continue;
       let arr;
@@ -1119,7 +1122,7 @@ async function updateShipmentByLr(lrNumber, mutate) {
 }
 
 /* Server-side FINAL LR document (A4, print-ready) from shipment + EWB. */
-function finalLrHtml(s, ewb) {
+function finalLrHtml(s, ewb, isTest) {
   const e = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const money = (v) => "₹" + Number(v || 0).toLocaleString("en-IN");
   const items = Array.isArray(ewb.itemList) ? ewb.itemList : [];
@@ -1152,7 +1155,7 @@ function finalLrHtml(s, ewb) {
       <div style="font-size:10.5px;color:#475569;margin-top:2px">Transporter ID: ${e(SHIPZY_TRANSPORTER.id)} · ${e(SHIPZY_TRANSPORTER.name)}</div>
     </div>
     <div style="text-align:right">
-      <div class="final">FINAL LR</div>
+      <div class="final" style="${isTest ? "background:#f59e0b" : ""}">${isTest ? "TEST · FINAL LR" : "FINAL LR"}</div>
       <div class="lrno" style="margin-top:6px">${e(s.lrNumber || s.awb)}</div>
       <div style="font-size:10.5px;color:#475569">AWB: ${e(s.awb || "—")} · Date: ${e(s.lrDate || "")}</div>
     </div>
@@ -1263,8 +1266,9 @@ exports.waWebhook = functions
 
             const ewbMatch = String(text).match(/\b(\d{12})\b/);
             const lrMatch  = String(text).match(/\b(LR[-\s]?\d{4}[-\s]?\d{3,6})\b/i);
+            const isTest = /\bTEST\b/i.test(String(text));
             if (!ewbMatch || !lrMatch) {
-              await reply("🤖 ShipzyCart EWB Bot\n\nSend both together, e.g.:\n\nEWB 171234567890 LR-2026-0142\n\nI'll fetch the e-way bill, finalize that LR and send you the Final LR PDF.");
+              await reply("🤖 ShipzyCart EWB Bot\n\nSend both together, e.g.:\n\nEWB 171234567890 LR-2026-0142\n\nI'll fetch the e-way bill, finalize that LR and send back the Final LR PDF.\n\n🧪 Working on the /test dashboard? Add the word TEST:\nTEST EWB 171234567890 LR-2026-0003\n(Without TEST I only touch live data; with TEST, only test data.)");
               continue;
             }
             const ewbNo = ewbMatch[1];
@@ -1308,20 +1312,20 @@ exports.waWebhook = functions
                   action: "ewb-finalize", detail: { ewbNo, docNo: ewb.docNo || "", validUpto: ewb.validUpto || "" },
                 }],
               };
-            });
+            }, { testOnly: isTest });
 
             if (!updated) {
-              await reply(`❌ No shipment found with LR "${lrNo}". Check the LR number and try again.`);
+              await reply(`❌ No ${isTest ? "TEST" : "live"} shipment found with LR "${lrNo}".${isTest ? "" : " (Testing on /test? Add the word TEST to your message.)"} Check the LR number and try again.`);
               continue;
             }
 
             // Final LR PDF → WhatsApp document
             let sentPdf = false;
             try {
-              const pdf = await renderPdfFromHtml(finalLrHtml(updated, ewb));
-              const fname = `FINAL-${lrNo}.pdf`;
+              const pdf = await renderPdfFromHtml(finalLrHtml(updated, ewb, isTest));
+              const fname = `${isTest ? "TEST-" : ""}FINAL-${lrNo}.pdf`;
               const mediaId = await waUploadMedia(phoneId, token, pdf, fname);
-              const cap = `✅ *${lrNo} FINALIZED*\n\nEWB: ${ewbNo}\nInvoice: ${ewb.docNo || "—"} · ₹${Number(ewb.totInvValue || 0).toLocaleString("en-IN")}\nVehicle: ${lastVeh.vehicleNo || updated.vehicleNumber || "—"}\nValid till: ${ewb.validUpto || "—"}\nFrom: ${ewb.fromTrdName || "—"}\nTo: ${ewb.toTrdName || "—"}`;
+              const cap = `${isTest ? "🧪 TEST · " : ""}✅ *${lrNo} FINALIZED*\n\nEWB: ${ewbNo}\nInvoice: ${ewb.docNo || "—"} · ₹${Number(ewb.totInvValue || 0).toLocaleString("en-IN")}\nVehicle: ${lastVeh.vehicleNo || updated.vehicleNumber || "—"}\nValid till: ${ewb.validUpto || "—"}\nFrom: ${ewb.fromTrdName || "—"}\nTo: ${ewb.toTrdName || "—"}`;
               const r = await waSendDocument(phoneId, token, from, mediaId, fname, cap);
               sentPdf = r.ok;
               if (!r.ok) await reply(cap + "\n\n(PDF could not be attached: " + (r.error || "error") + ")");
