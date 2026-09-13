@@ -973,6 +973,23 @@ exports.apiWaTemplates = functions
         return res.json({ ok: true, data: { results } });
       }
 
+      if (b.action === "subscribe-app") {
+        // Webhooks only deliver once the token's app is subscribed to the
+        // WABA — the dashboard does NOT do this for pre-existing WABAs.
+        const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/subscribed_apps`, {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${token}` },
+        });
+        const j = await r.json().catch(() => ({}));
+        const lr = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/subscribed_apps`, {
+          headers: { "Authorization": `Bearer ${token}` },
+        });
+        const lj = await lr.json().catch(() => ({}));
+        const apps = (lj.data || []).map(a => a.whatsapp_business_api_data?.name || a.name || a.id);
+        if (j.error) return res.json({ ok: true, data: { ok: false, error: j.error.message, apps } });
+        return res.json({ ok: true, data: { ok: !!j.success, apps } });
+      }
+
       return res.status(400).json({ ok: false, error: "Unknown action" });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message || "Internal error" });
@@ -1477,24 +1494,6 @@ exports.apiIntegrations = functions
         const r = await waSendText(phoneId, token, num, "ShipzyCart test message ✅ — WhatsApp sending is configured correctly.");
         await logComm({ type: "wa", to: num, lr: "", subject: "Test message", status: r.ok ? "sent" : "failed", error: r.ok ? null : String(r.error || "").slice(0, 200), via: "direct", pdf: false });
         return res.json({ ok: true, data: r });
-      }
-
-      if (b.action === "subscribe-app") {
-        // Webhooks only deliver once the token's app is subscribed to the
-        // WABA — the dashboard does NOT do this for pre-existing WABAs.
-        const r = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/subscribed_apps`, {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${token}` },
-        });
-        const j = await r.json().catch(() => ({}));
-        if (j.error) return res.json({ ok: true, data: { ok: false, error: j.error.message } });
-        // List current subscriptions for confirmation
-        const lr = await fetch(`https://graph.facebook.com/v20.0/${info.wabaId}/subscribed_apps`, {
-          headers: { "Authorization": `Bearer ${token}` },
-        });
-        const lj = await lr.json().catch(() => ({}));
-        const apps = (lj.data || []).map(a => a.whatsapp_business_api_data?.name || a.name || a.id);
-        return res.json({ ok: true, data: { ok: !!j.success, apps } });
       }
 
       return res.status(400).json({ ok: false, error: "Unknown action" });
