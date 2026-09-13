@@ -20,9 +20,17 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-95";
+const BUILD_VERSION = "v2026.05.11-96";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-96",
+    date:    "2026-09-13",
+    title:   "Sturdier test-mode detection",
+    highlights: [
+      "/test detection now matches any /test path form and also honors ?test=1 as an alternate switch; a console badge confirms the mode. If /test ever appears to open in live mode, a hard refresh (stale cached bundle) plus the version chip is the check.",
+    ],
+  },
   {
     version: "v2026.05.11-95",
     date:    "2026-09-13",
@@ -1327,7 +1335,9 @@ const SHIPZY_TRANSPORTER = {
    the cloud workspace becomes "test", so shipments/warehouses/etc live in
    workspaces/test/* while production stays untouched. The WhatsApp EWB
    Bot searches all workspaces, so test LRs get real Final-LR replies. ── */
-const IS_TEST_MODE = typeof location !== "undefined" && /^\/test\/?$/.test(location.pathname);
+const IS_TEST_MODE = typeof location !== "undefined" &&
+  (/^\/test(\/|$)/.test(location.pathname) || /[?&]test=1\b/.test(location.search));
+try { if (IS_TEST_MODE) console.log("%c🧪 ShipzyCart TEST MODE", "background:#f59e0b;color:#fff;padding:2px 8px;border-radius:4px"); } catch {}
 
 const STORAGE_KEYS = {
   warehouses:       "shipzy:warehouses:v2",
