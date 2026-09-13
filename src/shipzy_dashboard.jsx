@@ -20,9 +20,19 @@ import {
    CHANGELOG is the source of truth for the "What's new" panel.
    Newest entries first; each entry is one shipped build.
    ============================================================ */
-const BUILD_VERSION = "v2026.05.11-94";
+const BUILD_VERSION = "v2026.05.11-95";
 
 const CHANGELOG = [
+  {
+    version: "v2026.05.11-95",
+    date:    "2026-09-13",
+    title:   "Test Dashboard at /test + inbound messages visible in Comms Log",
+    highlights: [
+      "Open https://shipzycart-ftl.web.app/test — the full app in TEST MODE: every storage key isolated with a :TEST suffix and the cloud workspace switched to 'test', so test warehouses, LRs and shipments live completely apart from production (API/AI/cloud credentials are shared, nothing to re-enter). An amber '🧪 TEST MODE' pill sits at the bottom with an exit link, and the browser tab is prefixed [TEST].",
+      "The WhatsApp EWB Bot searches every workspace — so a test LR + real EWB sent from the whitelisted number gets a genuine Final LR PDF reply, end-to-end, without touching live data. Perfect rehearsal ground.",
+      "Comms Log now shows incoming bot messages properly: '📥 WhatsApp IN' channel tag and the message text (IN: hello …) in Details — previously logged but invisible for WhatsApp rows.",
+    ],
+  },
   {
     version: "v2026.05.11-94",
     date:    "2026-09-13",
@@ -1312,6 +1322,13 @@ const SHIPZY_TRANSPORTER = {
 /* ============================================================
    STORAGE LAYER  – persists across sessions
    ============================================================ */
+/* ── TEST MODE: https://…/test serves this same app with fully isolated
+   data — every storage key gets a :TEST suffix (config keys shared) and
+   the cloud workspace becomes "test", so shipments/warehouses/etc live in
+   workspaces/test/* while production stays untouched. The WhatsApp EWB
+   Bot searches all workspaces, so test LRs get real Final-LR replies. ── */
+const IS_TEST_MODE = typeof location !== "undefined" && /^\/test\/?$/.test(location.pathname);
+
 const STORAGE_KEYS = {
   warehouses:       "shipzy:warehouses:v2",
   vehicles:         "shipzy:vehicles:v1",
@@ -1332,8 +1349,18 @@ const STORAGE_KEYS = {
   // LTL Rates API — talks to the ShipzyCart CRM Integration API
   // (customer typeahead, service catalogue, and quote computation).
   // Contains { apiKey, baseUrl }; syncs across the workspace like aiConfig.
-  ltlConfig:        "shipzy:ltlConfig:v1",
+  ltlConfig:        "shipzy:ltlConfig:v1", // shared with test mode
 };
+
+if (IS_TEST_MODE) {
+  // Isolate DATA keys; keep credentials/config shared so test mode works
+  // without re-entering API keys.
+  const shared = new Set([STORAGE_KEYS.cloudConfig, STORAGE_KEYS.ltlConfig, STORAGE_KEYS.aiConfig].filter(Boolean));
+  for (const k of Object.keys(STORAGE_KEYS)) {
+    if (!shared.has(STORAGE_KEYS[k])) STORAGE_KEYS[k] += ":TEST";
+  }
+  try { document.title = "[TEST] " + document.title; } catch {}
+}
 
 
 /* ============================================================
@@ -1937,11 +1964,22 @@ const CLOUD_CONFIG_KEY = "shipzy:cloudSync:v1";
 const loadCloudConfig = () => {
   try {
     const raw = localStorage.getItem(CLOUD_CONFIG_KEY);
-    return raw ? JSON.parse(raw) : { enabled: true, workspaceId: "production", firebaseConfig: null };
-  } catch { return { enabled: true, workspaceId: "production", firebaseConfig: null }; }
+    const cfg = raw ? JSON.parse(raw) : { enabled: true, workspaceId: "production", firebaseConfig: null };
+    if (IS_TEST_MODE) cfg.workspaceId = "test";
+    return cfg;
+  } catch { return { enabled: true, workspaceId: IS_TEST_MODE ? "test" : "production", firebaseConfig: null }; }
 };
 const saveCloudConfig = (cfg) => {
-  try { localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cfg)); } catch {}
+  try {
+    // TEST MODE shares this key with production — never let a save from
+    // /test leak workspaceId "test" into the live app's config.
+    if (IS_TEST_MODE) {
+      let stored = {};
+      try { stored = JSON.parse(localStorage.getItem(CLOUD_CONFIG_KEY) || "{}"); } catch {}
+      cfg = { ...cfg, workspaceId: stored.workspaceId || "production" };
+    }
+    localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify(cfg));
+  } catch {}
 };
 
 /* Lazy Firebase app handle — avoid double-init on hot edits / re-mounts. */
@@ -6043,6 +6081,7 @@ export default function App() {
         <CloudSyncEngine cloudConfig={cloudConfig} onStatus={setCloudStatus} />
         <PresenceEngine cloudConfig={cloudConfig} currentUser={null} onPresenceUpdate={setPresenceList} />
         <LoginScreen users={users} onLogin={onLogin} cloudConfig={cloudConfig} cloudStatus={cloudStatus} authError={authError} />
+        <TestModeBanner />
         <CookieConsent />
       </>
     );
@@ -6287,6 +6326,7 @@ export default function App() {
       )}
 
       {whatsNewOpen && <WhatsNewTour onClose={_closeWhatsNew} />}
+      <TestModeBanner />
       <CookieConsent />
       {voiceBookOpen && (
         <VoiceBookModal
@@ -20569,6 +20609,15 @@ function WaTemplatesTab({ currentUser, showToast }) {
    Firestore — this tab reads it: recipient, LR, sent/failed, why,
    direct vs template, PDF or not. ── */
 /* ── First-visit cookie/storage consent ── */
+function TestModeBanner() {
+  if (!IS_TEST_MODE) return null;
+  return (
+    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[96] px-4 py-1.5 rounded-full bg-amber-500 text-white text-[11px] font-bold shadow-lg flex items-center gap-2">
+      🧪 TEST MODE — isolated data (workspace: test) · <a href="/" className="underline">exit to live app</a>
+    </div>
+  );
+}
+
 function CookieConsent() {
   const [show, setShow] = useState(() => {
     try { return !localStorage.getItem("shipzy:cookieConsent:v1"); } catch { return false; }
@@ -20688,7 +20737,7 @@ function CommsLog() {
               {shown.map(e => (
                 <tr key={e.id} className={e.status === "failed" ? "bg-rose-50/40" : ""}>
                   <td className="py-2 px-3 whitespace-nowrap text-slate-500">{fmtTs(e.ts)}</td>
-                  <td className="px-3 whitespace-nowrap">{e.type === "email" ? "✉️ Email" : "📱 WhatsApp"}</td>
+                  <td className="px-3 whitespace-nowrap">{e.type === "email" ? "✉️ Email" : e.via === "inbound" ? "📥 WhatsApp IN" : "📱 WhatsApp"}</td>
                   <td className="px-3 max-w-[260px] truncate font-mono text-[10.5px]" title={recipients(e)}>{recipients(e) || "—"}</td>
                   <td className="px-3 whitespace-nowrap font-semibold text-[#00304a]">{e.lr || (e.subject === "Test email" || e.subject === "Test message" ? "test" : "—")}</td>
                   <td className="px-3">
@@ -20698,7 +20747,7 @@ function CommsLog() {
                   </td>
                   <td className="px-3 max-w-[280px] truncate text-slate-500" title={e.error || ""}>
                     {e.status === "failed" ? (e.error || "—")
-                      : [e.via === "template" ? "via template" : null, e.pdf ? "LR PDF" : null, e.type === "email" && e.subject ? e.subject : null].filter(Boolean).join(" · ") || "—"}
+                      : [e.via === "template" ? "via template" : null, e.pdf ? "LR PDF" : null, e.subject || null].filter(Boolean).join(" · ") || "—"}
                   </td>
                 </tr>
               ))}
