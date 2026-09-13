@@ -1040,10 +1040,11 @@ async function fetchEwbRaw(ewbNo) {
 /* Find the shipment by LR across workspaces; apply the mutation; save. */
 async function updateShipmentByLr(lrNumber, mutate) {
   const db = admin.firestore();
-  const wsSnap = await db.collection("workspaces").get();
+  // listDocuments() — workspace parents are virtual docs; .get() misses them.
+  const wsRefs = await db.collection("workspaces").listDocuments();
   const target = String(lrNumber).trim().toLowerCase();
-  for (const ws of wsSnap.docs) {
-    const ref = db.collection("workspaces").doc(ws.id).collection("state").doc("shipzy_shipments_v4");
+  for (const ws of wsRefs) {
+    const ref = ws.collection("state").doc("shipzy_shipments_v4");
     const doc = await ref.get();
     if (!doc.exists) continue;
     let arr;

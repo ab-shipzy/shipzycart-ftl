@@ -17,11 +17,13 @@ const writeDoc = (file, data) => {
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
 };
 
-const wss = await db.collection("workspaces").get();
+// listDocuments() (not .get()) — parents of subcollections are "virtual"
+// docs in Firestore when never explicitly created, and .get() skips them.
+const wsRefs = await db.collection("workspaces").listDocuments();
 let docs = 0;
-for (const ws of wss.docs) {
+for (const ws of wsRefs) {
   for (const sub of ["state", "presence"]) {
-    const snap = await db.collection("workspaces").doc(ws.id).collection(sub).get();
+    const snap = await ws.collection(sub).get();
     for (const d of snap.docs) {
       const data = d.data();
       if (typeof data.value === "string") {
@@ -34,7 +36,7 @@ for (const ws of wss.docs) {
 }
 writeDoc(path.join(OUT, "_meta.json"), {
   backedUpAt: new Date().toISOString(),
-  workspaces: wss.size,
+  workspaces: wsRefs.length,
   documents: docs,
 });
-console.log(`Backed up ${docs} docs from ${wss.size} workspace(s)`);
+console.log(`Backed up ${docs} docs from ${wsRefs.length} workspace(s)`);
