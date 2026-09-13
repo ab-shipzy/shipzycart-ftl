@@ -1206,9 +1206,20 @@ exports.waWebhook = functions
             if (seen.exists) continue;
             await seenRef.set({ at: Date.now(), from });
 
-            if (!allowed.includes(from)) continue; // silently ignore strangers
+            if (!allowed.includes(from)) {
+              await logComm({ type: "wa", to: from, lr: "", subject: `IGNORED (not whitelisted): ${String(text).slice(0, 60)}`, status: "failed", error: "sender not in allowed list", via: "inbound", pdf: false, context: "ewb-bot-in" });
+              continue;
+            }
 
-            const reply = (body) => waSendText(phoneId, token, from, body);
+            // Log the inbound itself — visibility into whether webhooks arrive.
+            await logComm({ type: "wa", to: from, lr: "", subject: `IN: ${String(text).slice(0, 80)}`, status: "sent", via: "inbound", pdf: false, context: "ewb-bot-in" });
+
+            // Every reply attempt is logged with its real outcome.
+            const reply = async (body) => {
+              const r = await waSendText(phoneId, token, from, body);
+              await logComm({ type: "wa", to: from, lr: "", subject: `REPLY: ${String(body).slice(0, 60)}`, status: r.ok ? "sent" : "failed", error: r.ok ? null : String(r.error || "").slice(0, 200), via: "direct", pdf: false, context: "ewb-bot-reply" });
+              return r;
+            };
 
             const ewbMatch = String(text).match(/\b(\d{12})\b/);
             const lrMatch  = String(text).match(/\b(LR[-\s]?\d{4}[-\s]?\d{3,6})\b/i);
@@ -1218,8 +1229,6 @@ exports.waWebhook = functions
             }
             const ewbNo = ewbMatch[1];
             const lrNo  = lrMatch[1].toUpperCase().replace(/\s+/g, "-").replace(/LR-?/, "LR-");
-
-            await logComm({ type: "wa", to: from, lr: lrNo, subject: "EWB bot request", status: "sent", via: "inbound", pdf: false, context: "ewb-bot-in" });
 
             let ewb;
             try { ewb = await fetchEwbRaw(ewbNo); }
