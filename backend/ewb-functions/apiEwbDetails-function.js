@@ -1106,15 +1106,20 @@ async function updateShipmentByLr(lrNumber, mutate, opts = {}) {
     for (const ref of pool) {
       const doc = await ref.get();
       if (!doc.exists) continue;
-      let arr;
-      try { arr = JSON.parse(doc.data().value || "[]"); } catch { continue; }
+      const raw = doc.data().value;
+      // The sync engine stores value as a NATIVE array; legacy docs may
+      // hold a JSON string. Support both, write back in the same shape.
+      let arr, wasString = false;
+      if (Array.isArray(raw)) arr = raw;
+      else if (typeof raw === "string") { wasString = true; try { arr = JSON.parse(raw || "[]"); } catch { continue; } }
+      else continue;
       if (!Array.isArray(arr)) continue;
       const idx = arr.findIndex(s => s && !s.deletedAt &&
         (String(s.lrNumber || "").toLowerCase() === target || String(s.awb || "").toLowerCase() === target));
       if (idx === -1) continue;
       const updated = mutate(arr[idx]);
       arr[idx] = updated;
-      await ref.set({ value: JSON.stringify(arr) }, { merge: true });
+      await ref.set({ value: wasString ? JSON.stringify(arr) : arr, updatedAt: Date.now() }, { merge: true });
       return updated;
     }
   }
@@ -1277,10 +1282,14 @@ exports.waWebhook = functions
                     let lrs = [];
                     let n = 0;
                     if (d2.exists) {
-                      const v = String(d2.data().value || "");
-                      const m2 = v.match(/"lrNumber":"([^"]+)"/g) || [];
-                      n = m2.length;
-                      lrs = m2.slice(0, 5).map(x => x.replace(/"lrNumber":"|"/g, ""));
+                      const rawv = d2.data().value;
+                      let arr2 = Array.isArray(rawv) ? rawv : null;
+                      if (!arr2 && typeof rawv === "string") { try { arr2 = JSON.parse(rawv); } catch {} }
+                      if (Array.isArray(arr2)) {
+                        const act = arr2.filter(s => s && !s.deletedAt);
+                        n = act.length;
+                        lrs = act.slice(0, 5).map(s => s.lrNumber || s.awb || "?");
+                      }
                     }
                     lines.push(`${w.id} / ${r2.id}: ${n} shipments${lrs.length ? " → " + lrs.join(", ") : ""}`);
                   }
