@@ -1212,6 +1212,256 @@ function finalLrHtml(s, ewb, isTest) {
 
 const SHIPZY_TRANSPORTER = { id: "29AEOFS3685R1ZO", name: "Shipzy Logistics" };
 
+/* ══════════════════════════════════════════════════════════════
+   WhatsApp LR-Creation Wizard — "hi" → menu → guided draft LR.
+   Session per sender in Firestore (waSessions/{from}, 30-min TTL).
+   All lists come live from the app's own database; TEST keyword at
+   "hi" scopes the whole session to the /test dashboard's data.
+   ══════════════════════════════════════════════════════════════ */
+const WZ_STATE_CODES = {
+  "andhra pradesh":"AP","arunachal pradesh":"AR","assam":"AS","bihar":"BR","chhattisgarh":"CG",
+  "goa":"GA","gujarat":"GJ","haryana":"HR","himachal pradesh":"HP","jharkhand":"JH",
+  "karnataka":"KA","kerala":"KL","madhya pradesh":"MP","maharashtra":"MH","manipur":"MN",
+  "meghalaya":"ML","mizoram":"MZ","nagaland":"NL","odisha":"OD","punjab":"PB",
+  "rajasthan":"RJ","sikkim":"SK","tamil nadu":"TN","telangana":"TG","tripura":"TR",
+  "uttar pradesh":"UP","uttarakhand":"UK","west bengal":"WB",
+  "delhi":"DL","jammu and kashmir":"JK","ladakh":"LA","puducherry":"PY","chandigarh":"CH",
+};
+function wzStateCode(name) {
+  const k = String(name || "").trim().toLowerCase();
+  return WZ_STATE_CODES[k] || String(name || "").replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase() || "XX";
+}
+function wzUid(p) { return `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`; }
+function wzTodayISO() {
+  const d = new Date(Date.now() + 330 * 60000); // IST
+  return d.toISOString().slice(0, 10);
+}
+function wzDdmmyy() {
+  const d = new Date(Date.now() + 330 * 60000);
+  return `${String(d.getUTCDate()).padStart(2, "0")}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCFullYear()).slice(-2)}`;
+}
+
+/* Read a state doc (value may be native array/object or legacy JSON string). */
+async function wzGetStateDoc(baseId, test) {
+  const db = admin.firestore();
+  const id = baseId + (test ? "_TEST" : "");
+  const wsRefs = await db.collection("workspaces").listDocuments();
+  for (const ws of wsRefs) {
+    const ref = ws.collection("state").doc(id);
+    const doc = await ref.get();
+    if (!doc.exists) continue;
+    const raw = doc.data().value;
+    let val = raw, wasString = false;
+    if (typeof raw === "string") { wasString = true; try { val = JSON.parse(raw); } catch { val = null; } }
+    return { ref, val, wasString, wsId: ws.id };
+  }
+  return null;
+}
+async function wzWriteStateDoc(hit, newVal) {
+  await hit.ref.set({ value: hit.wasString ? JSON.stringify(newVal) : newVal, updatedAt: Date.now() }, { merge: true });
+}
+
+const WZ_SESS_TTL = 30 * 60 * 1000;
+async function wzGetSession(from) {
+  try {
+    const doc = await admin.firestore().collection("waSessions").doc(from).get();
+    if (!doc.exists) return null;
+    const s = doc.data();
+    if (Date.now() - (s.at || 0) > WZ_SESS_TTL) return null;
+    return s;
+  } catch { return null; }
+}
+async function wzSaveSession(from, sess) {
+  await admin.firestore().collection("waSessions").doc(from).set({ ...sess, at: Date.now() });
+}
+async function wzClearSession(from) {
+  try { await admin.firestore().collection("waSessions").doc(from).delete(); } catch {}
+}
+
+function wzNumbered(items, label) {
+  return items.map((it, i) => `${i + 1}. ${label(it)}`).join("\n");
+}
+const WZ_MENU = (test) =>
+  `${test ? "🧪 TEST MODE session\n\n" : ""}🤖 *ShipzyCart Bot* — what would you like to do?\n\n` +
+  `1. Associate EWB with an LR (finalize)\n2. Create a new LR (draft)\n\n` +
+  `Reply with *1* or *2*.` +
+  (test ? "" : "\n\n🧪 Testing on /test? Say *TEST hi* instead.") +
+  `\n(Type *cancel* anytime to exit.)`;
+
+/* Advance the wizard. Returns true when it handled the message. */
+async function wzHandle({ text, from, reply, isTestWord }) {
+  const raw = String(text || "").trim();
+  const clean = raw.replace(/\bTEST\b/gi, "").trim();
+  const isGreeting = /^(hi|hii+|hello|hey|menu|start|namaste)\b/i.test(clean) || clean === "";
+
+  let sess = await wzGetSession(from);
+
+  if (/^(cancel|exit|stop|quit)$/i.test(clean)) {
+    await wzClearSession(from);
+    await reply("👍 Cancelled. Say *hi* for the menu.");
+    return true;
+  }
+
+  if (isGreeting && raw !== "") {
+    const test = isTestWord;
+    await wzSaveSession(from, { mode: "menu", test, draft: {}, opts: {} });
+    await reply(WZ_MENU(test));
+    return true;
+  }
+
+  if (!sess) return false; // no active session — let other handlers run
+
+  const test = !!sess.test;
+  const pick = (arr) => {
+    const n = parseInt(clean, 10);
+    if (!Number.isFinite(n) || n < 1 || n > arr.length) return null;
+    return arr[n - 1];
+  };
+
+  if (sess.mode === "menu") {
+    if (clean === "1") {
+      await wzClearSession(from);
+      await reply(`📎 *Associate EWB → Final LR*\n\nSend both together:\n\n${test ? "TEST " : ""}EWB 171234567890 LR-2026-0142\n\nI'll fetch the e-way bill, finalize that LR and send back the Final LR PDF.`);
+      return true;
+    }
+    if (clean === "2") {
+      const wh = await wzGetStateDoc("shipzy_warehouses_v2", test);
+      const list = (wh && Array.isArray(wh.val) ? wh.val : []).filter(w => w && !w.deletedAt);
+      if (!list.length) { await wzClearSession(from); await reply(`❌ No warehouses found in ${test ? "TEST" : "live"} data. Add warehouses in the app first.`); return true; }
+      await wzSaveSession(from, { ...sess, mode: "lr:pickup", opts: { wh: list.map(w => ({ id: w.id, name: w.name, city: w.city, state: w.state })) } });
+      await reply(`🏭 *Step 1/6 — Origin (pickup) warehouse:*\n\n${wzNumbered(list, w => `${w.name}${w.city ? " — " + w.city : ""}`)}\n\nReply with the number.`);
+      return true;
+    }
+    await reply(WZ_MENU(test));
+    return true;
+  }
+
+  if (sess.mode === "lr:pickup") {
+    const w = pick(sess.opts.wh);
+    if (!w) { await reply(`Please reply with a number 1-${sess.opts.wh.length} (or *cancel*).`); return true; }
+    const rest = sess.opts.wh.filter(x => x.id !== w.id);
+    await wzSaveSession(from, { ...sess, mode: "lr:drop", draft: { ...sess.draft, pickupWarehouseId: w.id, _pickupName: w.name, _pickupState: w.state, _pickupCity: w.city }, opts: { ...sess.opts, whD: rest } });
+    await reply(`✅ Pickup: *${w.name}*\n\n📦 *Step 2/6 — Destination (drop) warehouse:*\n\n${wzNumbered(rest, x => `${x.name}${x.city ? " — " + x.city : ""}`)}\n\nReply with the number.`);
+    return true;
+  }
+
+  if (sess.mode === "lr:drop") {
+    const w = pick(sess.opts.whD);
+    if (!w) { await reply(`Please reply with a number 1-${sess.opts.whD.length} (or *cancel*).`); return true; }
+    const cl = await wzGetStateDoc("shipzy_billingClients_v1", test);
+    const list = (cl && Array.isArray(cl.val) ? cl.val : []).filter(c => c && !c.deletedAt);
+    await wzSaveSession(from, { ...sess, mode: "lr:client", draft: { ...sess.draft, deliveryWarehouseId: w.id, _dropName: w.name, _dropState: w.state, _dropCity: w.city }, opts: { ...sess.opts, cl: list.map(c => ({ id: c.id, name: c.name })) } });
+    await reply(`✅ Drop: *${w.name}*\n\n🏢 *Step 3/6 — Billing client (Bill To):*\n\n0. Skip for now\n${wzNumbered(list, c => c.name)}\n\nReply with the number.`);
+    return true;
+  }
+
+  if (sess.mode === "lr:client") {
+    let chosen = null;
+    if (clean === "0") chosen = { id: "", name: "(skipped)" };
+    else { chosen = pick(sess.opts.cl); if (!chosen) { await reply(`Reply 0-${sess.opts.cl.length} (or *cancel*).`); return true; } }
+    const vh = await wzGetStateDoc("shipzy_vehicles_v1", test);
+    const list = (vh && Array.isArray(vh.val) ? vh.val : []).filter(v => v && !v.deletedAt);
+    await wzSaveSession(from, { ...sess, mode: "lr:vehicle", draft: { ...sess.draft, billingClientId: chosen.id, _clientName: chosen.name }, opts: { ...sess.opts, vh: list.map(v => ({ id: v.id, name: v.name })) } });
+    await reply(`✅ Bill To: *${chosen.name}*\n\n🚛 *Step 4/6 — Vehicle type:*\n\n0. Skip for now\n${wzNumbered(list, v => v.name)}\n\nReply with the number.`);
+    return true;
+  }
+
+  if (sess.mode === "lr:vehicle") {
+    let chosen = null;
+    if (clean === "0") chosen = { id: "", name: "(skipped)" };
+    else { chosen = pick(sess.opts.vh); if (!chosen) { await reply(`Reply 0-${sess.opts.vh.length} (or *cancel*).`); return true; } }
+    const vd = await wzGetStateDoc("shipzy_vendors_v1", test);
+    const list = (vd && Array.isArray(vd.val) ? vd.val : []).filter(v => v && !v.deletedAt);
+    await wzSaveSession(from, { ...sess, mode: "lr:vendor", draft: { ...sess.draft, vehicleTypeId: chosen.id, _vehicleName: chosen.name }, opts: { ...sess.opts, vd: list.map(v => ({ id: v.id, name: v.name })) } });
+    await reply(`✅ Vehicle: *${chosen.name}*\n\n🚚 *Step 5/6 — Vendor (transporter):*\n\n0. Skip for now\n${wzNumbered(list, v => v.name)}\n\nReply with the number.`);
+    return true;
+  }
+
+  if (sess.mode === "lr:vendor") {
+    let chosen = null;
+    if (clean === "0") chosen = { id: "", name: "(skipped)" };
+    else { chosen = pick(sess.opts.vd); if (!chosen) { await reply(`Reply 0-${sess.opts.vd.length} (or *cancel*).`); return true; } }
+    await wzSaveSession(from, { ...sess, mode: "lr:boxes", draft: { ...sess.draft, vendorId: chosen.id, _vendorName: chosen.name } });
+    await reply(`✅ Vendor: *${chosen.name}*\n\n📦 *Step 6/6 — Number of boxes/packages:*\n\nReply with a number (0 if unknown).`);
+    return true;
+  }
+
+  if (sess.mode === "lr:boxes") {
+    const n = parseInt(clean, 10);
+    if (!Number.isFinite(n) || n < 0 || n > 100000) { await reply("Reply with a number, e.g. 24 (0 if unknown)."); return true; }
+    // ── CREATE the draft LR exactly like the app does ──
+    const d = sess.draft;
+    const shHit = await wzGetStateDoc("shipzy_shipments_v4", test);
+    if (!shHit || !Array.isArray(shHit.val)) { await wzClearSession(from); await reply("❌ Could not open the shipments database. Try from the app."); return true; }
+    const shipments = shHit.val;
+
+    // counters: use the doc when present, else derive safely from data
+    const ctHit = await wzGetStateDoc("shipzy_counters_v2", test);
+    let counters = (ctHit && ctHit.val && typeof ctHit.val === "object" && !Array.isArray(ctHit.val)) ? ctHit.val : null;
+    if (!counters) {
+      const maxLr = shipments.reduce((m, s) => Math.max(m, parseInt(String(s.lrNumber || "").split("-").pop(), 10) || 0), 0);
+      counters = { awbSeq: shipments.length, lrSeq: maxLr, daily: {} };
+    }
+    const dayKey = wzDdmmyy();
+    const dayMap = counters.daily || {};
+    const nextSeq = (dayMap[dayKey] || 0) + 1;
+    const nextCounters = {
+      ...counters,
+      awbSeq: (counters.awbSeq || 0) + 1,
+      lrSeq: (counters.lrSeq || 0) + 1,
+      daily: { ...dayMap, [dayKey]: nextSeq },
+    };
+    const awb = `${wzStateCode(d._pickupState)}-${wzStateCode(d._dropState)}-${dayKey}-${String(nextSeq).padStart(3, "0")}`;
+    const lr = `LR-${new Date().getFullYear()}-${String(nextCounters.lrSeq).padStart(4, "0")}`;
+    const nowISO = wzTodayISO();
+    const s = {
+      id: wzUid("sh"),
+      awb, lrNumber: lr, lrDate: nowISO,
+      status: "Booked",
+      createdBy: "", createdByName: "WhatsApp Bot", createdByMobile: from,
+      audit: [{ at: new Date().toISOString(), by: "WhatsApp Bot", byMobile: from, action: "create", detail: { awb, lrNumber: lr, mode: "wa-bot" } }],
+      groupId: null, groupIndex: 1, groupTotal: 1,
+      billingClientId: d.billingClientId || "", billingClientPocId: "", vendorId: d.vendorId || "",
+      pickupWarehouseId: d.pickupWarehouseId, deliveryWarehouseId: d.deliveryWarehouseId,
+      vehicleTypeId: d.vehicleTypeId || "", vehicleNumber: "", driverName: "", driverNumber: "",
+      boxes: n, cbm: 0, weightKg: 0,
+      dimensions: [{ count: 0, l: 0, w: 0, h: 0 }],
+      invoiceNo: "", invoiceValue: 0, ewayBillNo: "", saidToContain: "",
+      remarks: "Created via WhatsApp bot",
+      costs: [
+        { id: wzUid("c"), name: "Freight Cost", amount: 0 },
+        { id: wzUid("c"), name: "Loading / Unloading", amount: 0 },
+      ],
+      revenues: [
+        { id: wzUid("r"), name: "Freight", amount: 0 },
+        { id: wzUid("r"), name: "Loading / Unloading", amount: 0 },
+      ],
+      docs: [],
+      pickupLegs: [{
+        id: wzUid("pl"), warehouseId: d.pickupWarehouseId, pickupDate: nowISO,
+        invoiceNo: "", invoiceValue: 0, ewayBillNo: "", quantity: n,
+        uom: "Boxes", cbm: 0, weightKg: 0, saidToContain: "", notes: "",
+      }],
+      createdAt: nowISO,
+    };
+    await wzWriteStateDoc(shHit, [...shipments, s]);
+    if (ctHit) await wzWriteStateDoc(ctHit, nextCounters);
+    await wzClearSession(from);
+    await reply(
+      `${test ? "🧪 TEST · " : ""}✅ *Draft LR created!*\n\n` +
+      `*LR:* ${lr}\n*AWB:* ${awb}\n` +
+      `*Route:* ${d._pickupName} → ${d._dropName}\n` +
+      `*Bill To:* ${d._clientName}\n*Vehicle:* ${d._vehicleName}\n*Vendor:* ${d._vendorName}\n*Boxes:* ${n}\n\n` +
+      `Open the ${test ? "/test " : ""}dashboard to fill the rest.\n\n` +
+      `📎 When the e-way bill is ready, finalize with:\n${test ? "TEST " : ""}EWB <12-digit> ${lr}`
+    );
+    await logComm({ type: "wa", to: from, lr, status: "sent", via: "direct", pdf: false, context: "wa-bot-lr-create" });
+    return true;
+  }
+
+  return false;
+}
+
 exports.waWebhook = functions
   .region("us-central1")
   .runWith({ timeoutSeconds: 300, memory: "1GB" })
@@ -1269,6 +1519,15 @@ exports.waWebhook = functions
               return r;
             };
 
+            // Wizard: greetings, menu (1/2), and step replies — but never
+            // intercept an explicit EWB+LR command or DEBUG.
+            const _isEwbCmd = /\b\d{12}\b/.test(String(text)) && /\bLR[-\s]?\d{4}/i.test(String(text));
+            const _isDebug = /^\s*DEBUG\s*$/i.test(String(text));
+            if (!_isEwbCmd && !_isDebug) {
+              const handled = await wzHandle({ text, from, reply, isTestWord: /\bTEST\b/i.test(String(text)) });
+              if (handled) continue;
+            }
+
             // DEBUG command: map what actually exists in Firestore
             if (/^\s*DEBUG\s*$/i.test(String(text))) {
               try {
@@ -1305,7 +1564,7 @@ exports.waWebhook = functions
             const lrMatch  = String(text).match(/\b(LR[-\s]?\d{4}[-\s]?\d{3,6})\b/i);
             const isTest = /\bTEST\b/i.test(String(text));
             if (!ewbMatch || !lrMatch) {
-              await reply("🤖 ShipzyCart EWB Bot\n\nSend both together, e.g.:\n\nEWB 171234567890 LR-2026-0142\n\nI'll fetch the e-way bill, finalize that LR and send back the Final LR PDF.\n\n🧪 Working on the /test dashboard? Add the word TEST:\nTEST EWB 171234567890 LR-2026-0003\n(Without TEST I only touch live data; with TEST, only test data.)");
+              await reply("🤖 ShipzyCart Bot\n\nSay *hi* for the menu (create LR / associate EWB), or send directly:\n\nEWB 171234567890 LR-2026-0142\n\n🧪 For the /test dashboard, add the word TEST (TEST hi / TEST EWB … LR-…).");
               continue;
             }
             const ewbNo = ewbMatch[1];
