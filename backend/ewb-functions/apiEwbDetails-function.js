@@ -1264,6 +1264,34 @@ exports.waWebhook = functions
               return r;
             };
 
+            // DEBUG command: map what actually exists in Firestore
+            if (/^\s*DEBUG\s*$/i.test(String(text))) {
+              try {
+                const db2 = admin.firestore();
+                const wsRefs2 = await db2.collection("workspaces").listDocuments();
+                const lines = [];
+                for (const w of wsRefs2) {
+                  const sds = await w.collection("state").listDocuments();
+                  for (const r2 of sds.filter(x => x.id.startsWith("shipzy_shipments"))) {
+                    const d2 = await r2.get();
+                    let lrs = [];
+                    let n = 0;
+                    if (d2.exists) {
+                      const v = String(d2.data().value || "");
+                      const m2 = v.match(/"lrNumber":"([^"]+)"/g) || [];
+                      n = m2.length;
+                      lrs = m2.slice(0, 5).map(x => x.replace(/"lrNumber":"|"/g, ""));
+                    }
+                    lines.push(`${w.id} / ${r2.id}: ${n} shipments${lrs.length ? " → " + lrs.join(", ") : ""}`);
+                  }
+                }
+                await reply(lines.length ? `🔍 Firestore map:\n${lines.join("\n")}` : "🔍 Firestore map: no shipments docs found in any workspace.");
+              } catch (err) {
+                await reply(`🔍 Debug failed: ${err.message}`);
+              }
+              continue;
+            }
+
             const ewbMatch = String(text).match(/\b(\d{12})\b/);
             const lrMatch  = String(text).match(/\b(LR[-\s]?\d{4}[-\s]?\d{3,6})\b/i);
             const isTest = /\bTEST\b/i.test(String(text));
